@@ -256,6 +256,11 @@ func TestLoadReportsBadYAML(t *testing.T) {
 			want:    "only meaningful for input-style steps",
 		},
 		{
+			name:    "validate on a choice step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: choice, validate: { regex: \"^v$\" }, choices: [{ label: L, value: v }] }\n",
+			want:    "only meaningful for steps whose answer is a value",
+		},
+		{
 			name:    "unknown template placeholder",
 			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: input, template: [\"-ss\", \"{start}\"] }\n",
 			want:    "not supported",

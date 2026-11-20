@@ -249,7 +249,7 @@ func TestBuildArgumentOrder(t *testing.T) {
 
 	got := strings.Join(cmd.Args(), " ")
 	display := cmd.String()
-	wantDisplay := "ffmpeg -n -ss 3 -i in.mp4 -vf scale=-2:480 -af loudnorm -c:v libx264 -crf 23 -t 5 in_out.mp4"
+	wantDisplay := "ffmpeg -n -ss 3 -i in.mp4 -vf scale=-2:480 -af loudnorm -c:v libx264 -crf 23 -t 5 in_fixture.mp4"
 	if display != wantDisplay {
 		t.Errorf("String() =\n  %s\nwant\n  %s", display, wantDisplay)
 	}
@@ -276,7 +276,7 @@ func TestBuildArgumentOrder(t *testing.T) {
 		"-c:v", "libx264",
 		"-crf", "23",
 		"-t", "5",
-		"in_out.mp4",
+		"in_fixture.mp4",
 	)
 
 	if res.OutputExt() != "mp4" {
@@ -396,23 +396,32 @@ func TestBuildOverwriteFlag(t *testing.T) {
 }
 
 func TestDefaultOutput(t *testing.T) {
+	// plan.md §6.5: <input>_<task>.<ext>, next to the input.
 	tests := []struct {
 		input string
+		task  string
 		ext   string
 		want  string
 	}{
-		{"clip.mp4", "mp4", "clip_out.mp4"},
-		{"media/clip.mkv", "webm", "media/clip_out.webm"},
-		{"/abs/path/clip.avi", "mp4", "/abs/path/clip_out.mp4"},
-		{"no-extension", "gif", "no-extension_out.gif"},
-		{"archive.tar.gz", "mp3", "archive.tar_out.mp3"},
+		{"clip.mp4", "convert_video", "mp4", "clip_convert_video.mp4"},
+		{"media/clip.mkv", "convert_video", "webm", "media/clip_convert_video.webm"},
+		{"/abs/path/clip.avi", "trim", "mp4", "/abs/path/clip_trim.mp4"},
+		{"no-extension", "gif", "gif", "no-extension_gif.gif"},
+		// Only the last extension is replaced: the rest is part of the stem.
+		{"archive.tar.gz", "audio", "mp3", "archive.tar_audio.mp3"},
 		// Awkward names must survive unchanged (plan.md §11).
-		{"sp ace.mp4", "mp4", "sp ace_out.mp4"},
-		{"quote's.mp4", "mp4", "quote's_out.mp4"},
-		{"ünïcodé.mp4", "mp4", "ünïcodé_out.mp4"},
+		{"sp ace.mp4", "x", "mp4", "sp ace_x.mp4"},
+		{"quote's.mp4", "x", "mp4", "quote's_x.mp4"},
+		{"ünïcodé.mp4", "x", "mp4", "ünïcodé_x.mp4"},
+		// A Resolution with no task id still produces a usable name.
+		{"clip.mp4", "", "mp4", "clip_out.mp4"},
 	}
 	for _, tc := range tests {
-		res := Resolution{Active: []Step{{ID: "container"}}, Choices: map[string]Choice{"container": {OutputExt: tc.ext}}}
+		res := Resolution{
+			TaskID:  tc.task,
+			Active:  []Step{{ID: "container"}},
+			Choices: map[string]Choice{"container": {OutputExt: tc.ext}},
+		}
 		got, err := DefaultOutput(tc.input, res)
 		if err != nil {
 			t.Errorf("DefaultOutput(%q, %s): %v", tc.input, tc.ext, err)
@@ -483,5 +492,101 @@ func TestTaskApplies(t *testing.T) {
 	}
 	if !strings.Contains(reason, "video") {
 		t.Errorf("reason = %q, want it to mention video", reason)
+	}
+}
+
+func TestPreviewMarksUnansweredSteps(t *testing.T) {
+	eng := engineFor(loadFixture(t), nil, fullCaps())
+
+	got, res, err := eng.Preview(nil, BuildOptions{Input: "in.mp4"})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+
+	// `start` is an input step with no default and no answer, so it is the one
+	// step that cannot be settled; everything else carries a default.
+	if !res.Pending["start"] {
+		t.Errorf("Pending = %v, want it to contain start", res.Pending)
+	}
+	if !slices.Equal(got.Pending, []string{"start"}) {
+		t.Errorf("Preview.Pending = %v, want just start", got.Pending)
+	}
+	if res.Pending["container"] || res.Pending["quality"] {
+		t.Errorf("Pending = %v, want defaults to count as settled", res.Pending)
+	}
+
+	// The placeholder replaces the step's arguments, including the input-side
+	// -ss, and is ordered where those arguments would have gone.
+	args := got.Command.DisplayArgs()
+	if slices.Contains(args, "-ss") {
+		t.Errorf("the preview leaked the input args of an unanswered step: %v", args)
+	}
+	if !slices.Contains(args, "libx264") || !slices.Contains(args, "-crf") {
+		t.Errorf("the preview dropped the args of a settled step: %v", args)
+	}
+	// A step whose arguments are input options keeps its token before -i, where
+	// its real arguments go: the preview has to be a preview of a command that
+	// could actually run (DECISIONS D19).
+	if got := slices.Index(args, "<start>"); got != 1 {
+		t.Errorf("the <start> placeholder is at %d, want 1 (straight after -n): %v", got, args)
+	}
+	if i := slices.Index(args, "-i"); i < 0 || args[i+1] != "in.mp4" {
+		t.Errorf("the preview input is not right after -i: %v", args)
+	}
+	if args[len(args)-1] != "in_fixture.mp4" {
+		t.Errorf("the preview does not end with the output path: %v", args)
+	}
+}
+
+func TestPreviewOfASettledTaskIsExactlyTheCommand(t *testing.T) {
+	// With every answer given there is nothing pending, and the preview must be
+	// byte-identical to the command that will run; otherwise the review screen
+	// and the live pane could disagree.
+	eng := engineFor(loadFixture(t), nil, fullCaps())
+	answers := map[string]string{"container": "mp4", "codec": "h264", "quality": "small", "scale": "480", "start": "2", "speed": "1"}
+
+	built, _, err := eng.Build(answers, BuildOptions{Input: "in.mp4"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	previewed, res, err := eng.Preview(answers, BuildOptions{Input: "in.mp4"})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(res.Pending) != 0 {
+		t.Errorf("Pending = %v, want none", res.Pending)
+	}
+	if got, want := previewed.Command.String(), built.String(); got != want {
+		t.Errorf("preview = %q, want the built command %q", got, want)
+	}
+}
+
+func TestPreviewWithoutAChosenContainer(t *testing.T) {
+	// The output name cannot be derived before a container is chosen, which is
+	// the state of the wizard's very first screen. That must be a placeholder,
+	// not an error.
+	eng := engineFor(loadFixture(t), nil, fullCaps())
+	// Strip the output extension from every choice so no answer provides a name
+	// to write to: the state of the wizard's very first question.
+	for i := range eng.Task.Steps[0].Choices {
+		eng.Task.Steps[0].Choices[i].OutputExt = ""
+	}
+	if got := eng.Resolve(nil).OutputExt(); got != "" {
+		t.Fatalf("OutputExt() = %q, want the fixture to provide none", got)
+	}
+
+	got, res, err := eng.Preview(nil, BuildOptions{Input: "in.mp4"})
+	if err != nil {
+		t.Fatalf("Preview with no output extension: %v", err)
+	}
+	if !slices.Contains(got.Pending, "output") {
+		t.Errorf("Pending = %v, want an output placeholder", got.Pending)
+	}
+	if res.Pending["output"] {
+		t.Errorf("res.Pending = %v, want the output marker kept out of the answer map", res.Pending)
+	}
+	args := got.Command.DisplayArgs()
+	if args[len(args)-1] != "<output>" {
+		t.Errorf("the preview should end with <output>, got %v", args)
 	}
 }

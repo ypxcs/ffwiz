@@ -218,6 +218,9 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 	}
 
 	if v := step.Validate; v != nil {
+		if !step.Type.AcceptsValueValidation() {
+			errs = append(errs, at("validate is only meaningful for steps whose answer is a value, not %s", step.Type))
+		}
 		if v.Regex != "" {
 			if _, err := regexp.Compile(v.Regex); err != nil {
 				errs = append(errs, at("validate.regex does not compile: %v", err))

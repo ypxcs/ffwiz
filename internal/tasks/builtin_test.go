@@ -93,48 +93,48 @@ func TestConvertVideoCommands(t *testing.T) {
 		{
 			name: "defaults: MP4 with H.264 and copied audio",
 			info: videoWithAudio(),
-			want: "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 -c:a copy av_out.mp4",
+			want: "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 -c:a copy av_convert_video.mp4",
 		},
 		{
 			name:    "high quality",
 			info:    videoWithAudio(),
 			answers: map[string]string{"quality_h264": "high"},
-			want:    "ffmpeg -n -i av.mp4 -c:v libx264 -crf 18 -c:a copy av_out.mp4",
+			want:    "ffmpeg -n -i av.mp4 -c:v libx264 -crf 18 -c:a copy av_convert_video.mp4",
 		},
 		{
 			name:    "MKV with H.265 re-encoding the audio",
 			info:    videoWithAudio(),
 			answers: map[string]string{"container": "mkv", "vcodec": "h265", "audio": "aac"},
-			want:    "ffmpeg -n -i av.mp4 -c:v libx265 -crf 28 -c:a aac -b:a 192k av_out.mkv",
+			want:    "ffmpeg -n -i av.mp4 -c:v libx265 -crf 28 -c:a aac -b:a 192k av_convert_video.mkv",
 		},
 		{
 			name:    "WebM switches to VP9 and Opus without being asked",
 			info:    videoWithAudio(),
 			answers: map[string]string{"container": "webm"},
-			want:    "ffmpeg -n -i av.mp4 -c:v libvpx-vp9 -b:v 0 -crf 32 -c:a libopus -b:a 128k av_out.webm",
+			want:    "ffmpeg -n -i av.mp4 -c:v libvpx-vp9 -b:v 0 -crf 32 -c:a libopus -b:a 128k av_convert_video.webm",
 		},
 		{
 			name:    "stream copy keeps everything and skips quality",
 			info:    videoWithAudio(),
 			answers: map[string]string{"vcodec": "copy"},
-			want:    "ffmpeg -n -i av.mp4 -c:v copy -c:a copy av_out.mp4",
+			want:    "ffmpeg -n -i av.mp4 -c:v copy -c:a copy av_convert_video.mp4",
 		},
 		{
 			name:    "VP9 in an MKV, chosen explicitly",
 			info:    videoWithAudio(),
 			answers: map[string]string{"vcodec": "vp9", "quality_vp9": "small", "audio": "aac"},
-			want:    "ffmpeg -n -i av.mp4 -c:v libvpx-vp9 -b:v 0 -crf 40 -c:a aac -b:a 192k av_out.mp4",
+			want:    "ffmpeg -n -i av.mp4 -c:v libvpx-vp9 -b:v 0 -crf 40 -c:a aac -b:a 192k av_convert_video.mp4",
 		},
 		{
 			name:    "remove the audio track",
 			info:    videoWithAudio(),
 			answers: map[string]string{"audio": "none"},
-			want:    "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 -an av_out.mp4",
+			want:    "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 -an av_convert_video.mp4",
 		},
 		{
 			name: "a file with no audio stream asks nothing about audio",
 			info: videoWithoutAudio(),
-			want: "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 av_out.mp4",
+			want: "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 av_convert_video.mp4",
 		},
 	}
 
@@ -214,9 +214,9 @@ func TestConvertVideoOutputNames(t *testing.T) {
 		input     string
 		want      string
 	}{
-		{"mp4", "clip.mkv", "clip_out.mp4"},
-		{"mkv", "/films/My Movie (2019).mp4", "/films/My Movie (2019)_out.mkv"},
-		{"webm", "ünïcodé-ähm.mp4", "ünïcodé-ähm_out.webm"},
+		{"mp4", "clip.mkv", "clip_convert_video.mp4"},
+		{"mkv", "/films/My Movie (2019).mp4", "/films/My Movie (2019)_convert_video.mkv"},
+		{"webm", "ünïcodé-ähm.mp4", "ünïcodé-ähm_convert_video.webm"},
 	} {
 		eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps()}
 		cmd, _, err := eng.Build(map[string]string{"container": tc.container}, BuildOptions{Input: tc.input})

@@ -27,6 +27,10 @@ type Engine struct {
 // Resolution is the outcome of walking a task's steps with a set of raw answers:
 // which steps are active, and what the effective answers are.
 type Resolution struct {
+	// TaskID is the id of the task that was resolved. It is carried here so
+	// DefaultOutput can name the output after the task (plan.md §6.5) without
+	// every caller having to thread the task through.
+	TaskID string
 	// Active holds the steps that should be shown, in order.
 	Active []Step
 	// Answers holds the effective answer per active step, after defaults were
@@ -42,6 +46,13 @@ type Resolution struct {
 	// HiddenChoices maps a choice step id to the choices that were filtered out
 	// by capability requirements, so the UI can offer "why is X missing?".
 	HiddenChoices map[string][]Choice
+	// Shown is the inverse: the choices a step will actually offer, in order.
+	// The UI needs it to render a choice step without re-deriving the gates.
+	Shown map[string][]Choice
+	// Pending holds the ids of active steps that have no answer yet: no default,
+	// and nothing given. Their args appear as placeholder tokens so the live
+	// preview can show what is still missing (plan.md §6).
+	Pending map[string]bool
 
 	// TimeScale is the product of the answers to time_scale steps: 2 means the
 	// output plays twice as fast and is therefore half as long. It is 1 when no
@@ -56,10 +67,13 @@ type Resolution struct {
 // `skips` list can only switch off later steps.
 func (e *Engine) Resolve(raw map[string]string) Resolution {
 	res := Resolution{
+		TaskID:        e.Task.ID,
 		Answers:       map[string]string{},
 		Choices:       map[string]Choice{},
 		Skipped:       map[string]string{},
 		HiddenChoices: map[string][]Choice{},
+		Shown:         map[string][]Choice{},
+		Pending:       map[string]bool{},
 		TimeScale:     1,
 	}
 
@@ -83,6 +97,9 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 		if len(hidden) > 0 {
 			res.HiddenChoices[step.ID] = hidden
 		}
+		if step.Type == StepChoice {
+			res.Shown[step.ID] = available
+		}
 		if step.Type == StepChoice && len(available) == 0 {
 			// The choices were removed by a `when` condition, by a missing
 			// encoder/muxer/filter, or both; the message must not claim to know
@@ -91,14 +108,17 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 			continue
 		}
 
-		value, ok := raw[step.ID]
-		if step.Type == StepChoice {
-			value, ok = selectChoice(step, available, value)
-		} else if !ok || value == "" {
-			value, ok = step.Default, step.Default != ""
+		value, source := e.answerFor(step, available, raw[step.ID])
+		if source == sourceNone {
+			// Nothing could be settled: no answer, no default, and - for a
+			// choice step - nothing available. Only these steps become a
+			// placeholder in the preview; a default or a lone option is shown
+			// as the value it will take, because that is what the step screen
+			// highlights.
+			res.Pending[step.ID] = true
 		}
 
-		if ok && value != "" {
+		if value != "" {
 			res.Answers[step.ID] = value
 			if step.TimeScale {
 				if factor, err := strconv.ParseFloat(strings.TrimSuffix(value, "x"), 64); err == nil && factor > 0 {
@@ -121,6 +141,36 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 	}
 
 	return res
+}
+
+// answerSource records where an answer came from, which is what separates a
+// deliberate choice from one the engine had to invent to produce a command.
+type answerSource int
+
+const (
+	// sourceNone means the step is active but has no answer at all.
+	sourceNone answerSource = iota
+	// sourceUser means the user answered the step.
+	sourceUser
+	// sourceDefault means the step's declared default was used.
+	sourceDefault
+	// sourceInferred means there was no default and the engine picked the first
+	// available option so that the command is complete.
+	sourceInferred
+)
+
+// answerFor decides the answer for one step.
+func (e *Engine) answerFor(step Step, available []Choice, given string) (string, answerSource) {
+	if step.Type == StepChoice {
+		return selectChoice(step, available, given)
+	}
+	if given != "" {
+		return given, sourceUser
+	}
+	if step.Default != "" {
+		return step.Default, sourceDefault
+	}
+	return "", sourceNone
 }
 
 // markSkipped records the first reason a step is switched off; a later skip of
@@ -196,24 +246,25 @@ func (t Task) Applies(info *ffmpeg.MediaInfo) (bool, string) {
 }
 
 // selectChoice picks the answer for a choice step: the user's answer if it is
-// available, otherwise the default, otherwise the single default-marked choice,
-// otherwise the first available one.
-func selectChoice(step Step, available []Choice, want string) (string, bool) {
+// available, otherwise the step's default, otherwise the single default-marked
+// choice in step order, and failing everything the first available option, so
+// that a step with only one legal answer (VP9 in WebM) needs no YAML default.
+func selectChoice(step Step, available []Choice, want string) (string, answerSource) {
 	if want != "" && findChoiceOK(available, want) {
-		return want, true
+		return want, sourceUser
 	}
 	if step.Default != "" && findChoiceOK(available, step.Default) {
-		return step.Default, true
+		return step.Default, sourceDefault
 	}
 	for _, c := range available {
 		if c.Default {
-			return c.Value, true
+			return c.Value, sourceDefault
 		}
 	}
 	if len(available) > 0 {
-		return available[0].Value, true
+		return available[0].Value, sourceInferred
 	}
-	return "", false
+	return "", sourceNone
 }
 
 func findChoice(choices []Choice, value string) Choice {
@@ -247,10 +298,53 @@ type BuildOptions struct {
 
 // Build resolves the answers and produces a runnable ffmpeg command.
 func (e *Engine) Build(raw map[string]string, opts BuildOptions) (*ffmpeg.Command, Resolution, error) {
+	cmd, _, res, err := e.assemble(raw, opts, modeCommand)
+	return cmd, res, err
+}
+
+// Preview is a command as far as the answers go: the same request, but the
+// arguments of steps that have no answer yet are replaced by a placeholder token
+// (plan.md §6). It lets the UI show what is still missing without guessing.
+type Preview struct {
+	Command *ffmpeg.Command
+	// Pending lists the ids of the active steps that contributed a placeholder,
+	// in step order.
+	Pending []string
+}
+
+// Preview resolves the answers and renders the command so far.
+//
+// The placeholder for a step is a single "<step-id>" token placed where that
+// step's arguments will go. It is a real argument as far as ffmpeg.Build is
+// concerned - it is only ever displayed, never executed - so the preview obeys
+// exactly the same ordering rules as the command that will finally be run.
+func (e *Engine) Preview(raw map[string]string, opts BuildOptions) (Preview, Resolution, error) {
+	cmd, pending, res, err := e.assemble(raw, opts, modePreview)
+	if err != nil {
+		return Preview{}, res, err
+	}
+	return Preview{Command: cmd, Pending: pending}, res, nil
+}
+
+// placeholderFor is the marker a pending step leaves in the preview.
+func placeholderFor(stepID string) string { return "<" + stepID + ">" }
+
+type buildMode int
+
+const (
+	// modeCommand produces the command that will be executed.
+	modeCommand buildMode = iota
+	// modePreview marks unanswered steps instead of pretending they are settled.
+	modePreview
+)
+
+// assemble turns a resolution into an ffmpeg request. It is shared by Build and
+// Preview so the two can never disagree about argument order.
+func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMode) (*ffmpeg.Command, []string, Resolution, error) {
 	res := e.Resolve(raw)
 
 	if opts.Input == "" {
-		return nil, res, errors.New("no input file")
+		return nil, nil, res, errors.New("no input file")
 	}
 
 	req := ffmpeg.Request{
@@ -260,9 +354,30 @@ func (e *Engine) Build(raw map[string]string, opts BuildOptions) (*ffmpeg.Comman
 		ExpectedDuration: e.expectedDuration(res),
 	}
 
+	var pending []string
+
 	// Argument placement follows the field docs in schema.go and DECISIONS D19:
 	// input options before -i, everything else in step order after the inputs.
 	for _, step := range res.Active {
+		if mode == modePreview && res.Pending[step.ID] {
+			// One token where the arguments will appear, and nothing else: the
+			// filters and maps of an unsettled step must not leak into the
+			// preview either, or the preview would show a command that could
+			// never be produced.
+			//
+			// A step that contributes input options (a seek, say) puts its
+			// token before -i, because that is where its real arguments go:
+			// showing -ss after the output name would be a preview of a command
+			// ffmpeg could not run.
+			pending = append(pending, step.ID)
+			if len(step.InputTemplate) > 0 {
+				req.Inputs[0].Args = append(req.Inputs[0].Args, placeholderFor(step.ID))
+			} else {
+				req.OutputArgs = append(req.OutputArgs, placeholderFor(step.ID))
+			}
+			continue
+		}
+
 		choice, isChoice := res.Choices[step.ID]
 		if !isChoice {
 			// A non-choice step contributes through its template.
@@ -292,13 +407,23 @@ func (e *Engine) Build(raw map[string]string, opts BuildOptions) (*ffmpeg.Comman
 	if opts.Output == "" {
 		out, err := DefaultOutput(opts.Input, res)
 		if err != nil {
-			return nil, res, err
+			// A preview before any container is chosen has nowhere to write.
+			// That is not an error worth showing: the user has not finished.
+			if mode == modePreview {
+				out = ""
+			} else {
+				return nil, nil, res, err
+			}
 		}
 		req.Output = out
 	}
+	if req.Output == "" {
+		req.Output = placeholderFor("output")
+		pending = append(pending, "output")
+	}
 
 	cmd, err := ffmpeg.Build(req)
-	return cmd, res, err
+	return cmd, pending, res, err
 }
 
 // DefaultOutput derives an output path next to the input, e.g.
@@ -316,7 +441,13 @@ func DefaultOutput(input string, res Resolution) (string, error) {
 	if stem == "" {
 		return "", fmt.Errorf("cannot derive an output name from %q", input)
 	}
-	return filepath.Join(dir, stem+"_out."+strings.TrimPrefix(ext, ".")), nil
+	suffix := res.TaskID
+	if suffix == "" {
+		// A Resolution built by hand (tests, and the `--dump` path before a
+		// task is chosen) has no id; "out" keeps the name unique and obvious.
+		suffix = "out"
+	}
+	return filepath.Join(dir, stem+"_"+suffix+"."+strings.TrimPrefix(ext, ".")), nil
 }
 
 // OutputExt returns the extension contributed by the first active choice that

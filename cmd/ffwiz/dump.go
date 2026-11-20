@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
+	"github.com/ypxcs/ffwiz/internal/format"
 	"github.com/ypxcs/ffwiz/internal/tasks"
 )
 
@@ -193,7 +194,7 @@ func describeInput(info *ffmpeg.MediaInfo) string {
 	}
 	var parts []string
 	if d := info.Duration(); d > 0 {
-		parts = append(parts, roundDuration(d))
+		parts = append(parts, format.Duration(d))
 	}
 	if v, ok := info.FirstStream(ffmpeg.StreamVideo); ok {
 		parts = append(parts, fmt.Sprintf("video %s %dx%d", v.CodecName, v.Width, v.Height))

@@ -107,8 +107,8 @@ func TestRunDumpText(t *testing.T) {
 	for _, want := range []string{
 		"task     demo",
 		"input    clip.mp4",
-		"output   clip_out.mp4",
-		"ffmpeg -n -i clip.mp4 clip_out.mp4",
+		"output   clip_demo.mp4",
+		"ffmpeg -n -i clip.mp4 clip_demo.mp4",
 		"container",
 		"default",
 	} {
@@ -133,7 +133,7 @@ func TestRunDumpAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runDump: %v", err)
 	}
-	if !strings.Contains(out, "ffmpeg -n -i clip.mp4 -c:v libsvtav1 clip_out.mkv") {
+	if !strings.Contains(out, "ffmpeg -n -i clip.mp4 -c:v libsvtav1 clip_demo.mkv") {
 		t.Errorf("dump output does not contain the expected command:\n%s", out)
 	}
 	if !strings.Contains(out, "answered") {
