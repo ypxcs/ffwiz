@@ -181,15 +181,101 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 		if step.Default != "" && !seen[step.Default] {
 			errs = append(errs, at("default %q is not one of the choices", step.Default))
 		}
+		if step.Type == StepMulti {
+			// A multi step with nothing ticked has no answer at all, so it must
+			// say what to start from or the preview can never settle.
+			if step.Default == "" {
+				errs = append(errs, at("type multi needs a default; without one there is nothing to start from"))
+			}
+			errs = append(errs, t.validateMulti(step, at)...)
+		}
 
-	case StepInput, StepTimeRange, StepResolution:
-		if len(step.Choices) > 0 {
-			errs = append(errs, at("type %s must not declare choices", step.Type))
+	case StepResolution:
+		// A resolution step is a list of presets plus, optionally, room to type
+		// a value of your own. Its arguments come from the step's template, so
+		// its choices must not carry any of their own.
+		if len(step.Choices) == 0 {
+			errs = append(errs, at("type resolution requires at least one preset"))
+		}
+		defaults := 0
+		seen := map[string]bool{}
+		for j, c := range step.Choices {
+			if c.Label == "" {
+				errs = append(errs, at("preset %d is missing a label", j))
+			}
+			if c.Value == "" {
+				errs = append(errs, at("preset %q is missing a value", c.Label))
+			}
+			if seen[c.Value] {
+				errs = append(errs, at("duplicate preset value %q", c.Value))
+			}
+			seen[c.Value] = true
+			if c.Default {
+				defaults++
+			}
+			if len(c.Args) > 0 || len(c.InputArgs) > 0 || len(c.OutputArgs) > 0 ||
+				len(c.Filters) > 0 || len(c.FilterComplex) > 0 || len(c.Maps) > 0 {
+				errs = append(errs, at("preset %q carries arguments of its own; "+
+					"a resolution step's arguments come from its template", c.Value))
+			}
+			if c.OutputExt != "" {
+				errs = append(errs, at("preset %q sets output_ext; "+
+					"the container is chosen by a different step", c.Value))
+			}
+			for _, skip := range c.Skips {
+				errs = append(errs, checkForwardRef(skip, "preset "+c.Value+" skips", stepIDs, i, at)...)
+			}
+			for _, err := range c.When.validate(stepIDs, i) {
+				errs = append(errs, at("preset %q: %v", c.Value, err))
+			}
+		}
+		if defaults > 1 {
+			errs = append(errs, at("%d presets are marked default; exactly one is allowed", defaults))
+		}
+		if step.Default != "" && !seen[step.Default] {
+			errs = append(errs, at("default %q is not one of the presets", step.Default))
+		}
+		if len(step.Template) == 0 {
+			errs = append(errs, at("type resolution needs a template that uses {value}"))
+		}
+		if len(step.InputTemplate) > 0 {
+			errs = append(errs, at("type resolution cannot contribute input options"))
+		}
+		if step.Custom && step.Validate == nil {
+			errs = append(errs, at("custom: true needs a validate block to bound the typed value"))
 		}
 
 	case StepConfirm:
 		if len(step.Choices) > 0 {
 			errs = append(errs, at("type confirm must not declare choices"))
+		}
+		if len(step.Template) > 0 || len(step.InputTemplate) > 0 {
+			errs = append(errs, at("type confirm must not declare templates; use args"))
+		}
+		for j, a := range step.Args {
+			if strings.TrimSpace(a) == "" {
+				errs = append(errs, at("args entry %d is empty", j))
+			}
+		}
+		if step.Target != "" && step.Target != FilterVideo && step.Target != FilterAudio {
+			errs = append(errs, at("unknown filter target %q", step.Target))
+		}
+		if step.Target == FilterAudio && len(step.Filters) == 0 {
+			errs = append(errs, at("target: audio without any filters"))
+		}
+		if step.Custom {
+			errs = append(errs, at("custom is only meaningful for type resolution"))
+		}
+
+	case StepInput, StepTimeRange:
+		if len(step.Choices) > 0 {
+			errs = append(errs, at("type %s must not declare choices", step.Type))
+		}
+		if step.Custom {
+			errs = append(errs, at("custom is only meaningful for type resolution"))
+		}
+		if len(step.Args) > 0 || len(step.Filters) > 0 {
+			errs = append(errs, at("type %s contributes through its template, not args", step.Type))
 		}
 
 	case "":
@@ -199,13 +285,14 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 		errs = append(errs, at("unknown type %q", step.Type))
 	}
 
-	// Templates must only use {value}; anything else would be emitted literally
-	// into a command line.
+	// Templates must only use the placeholders their type provides; anything
+	// else would be emitted literally into a command line.
 	for _, tmpl := range [][]string{step.Template, step.InputTemplate} {
 		for _, arg := range tmpl {
 			for _, m := range placeholderRe.FindAllStringSubmatch(arg, -1) {
-				if m[1] != "value" {
-					errs = append(errs, at("template placeholder {%s} is not supported (only {value})", m[1]))
+				if !validPlaceholder(step.Type, m[1]) {
+					errs = append(errs, at("template placeholder {%s} is not available for type %s (%s)",
+						m[1], step.Type, placeholderHelp(step.Type)))
 				}
 			}
 		}
@@ -325,6 +412,63 @@ func (t *Task) validateChoice(step Step, stepIndex int, stepIDs map[string]int, 
 
 // capabilityNameRe mirrors the shape of a real encoder/muxer/filter name.
 var capabilityNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.+-]*$`)
+
+// validPlaceholder reports whether a step type provides a placeholder, so that
+// {start} in an input step is a load-time error rather than a literal "{start}"
+// in a command line.
+func validPlaceholder(t StepType, name string) bool {
+	switch name {
+	case "value":
+		return t.AcceptsValueValidation()
+	case "start", "end", "duration":
+		return t == StepTimeRange
+	default:
+		return false
+	}
+}
+
+// placeholderHelp lists the placeholders a type provides, for the error message.
+func placeholderHelp(t StepType) string {
+	if t == StepTimeRange {
+		return "want {start}, {end} or {duration}"
+	}
+	if t.AcceptsValueValidation() {
+		return "want {value}"
+	}
+	return "this type has no templates"
+}
+
+// validateMulti checks a multi step's extra rules.
+func (t *Task) validateMulti(step Step, at func(string, ...any) error) []error {
+	var errs []error
+	// A multi step's answer is a comma-separated list of values, so a value
+	// containing a comma could never be selected unambiguously.
+	for _, c := range step.Choices {
+		if strings.Contains(c.Value, ",") {
+			errs = append(errs, at("multi choice value %q contains a comma, which is the separator between selections", c.Value))
+		}
+	}
+	for _, v := range strings.Split(step.Default, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		found := false
+		for _, c := range step.Choices {
+			if c.Value == v {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, at("default %q is not one of the choices", v))
+		}
+	}
+	if step.TimeScale {
+		errs = append(errs, at("time_scale is not meaningful for type multi"))
+	}
+	return errs
+}
 
 func checkForwardRef(ref, context string, stepIDs map[string]int, current int, at func(string, ...any) error) []error {
 	idx, ok := stepIDs[ref]

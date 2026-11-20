@@ -135,6 +135,21 @@ type Model struct {
 	choiceIdx int
 	stepInput textinput.Model
 
+	// The richer step types need state of their own, seeded from the resolved
+	// answer in syncStep so that going back and forward restores what was
+	// entered (plan.md §6.4).
+	//
+	// toggles is the checkbox state of the multi step on screen, keyed by choice
+	// value; confirmYes is the answer of the confirm step on screen; rangeStart
+	// and rangeEnd are the two fields of a time_range step, with rangeField
+	// naming which one has the cursor; customInput holds a typed resolution.
+	toggles     map[string]bool
+	confirmYes  bool
+	rangeStart  textinput.Model
+	rangeEnd    textinput.Model
+	rangeField  int
+	customInput textinput.Model
+
 	outputPath  string
 	outputInput textinput.Model
 	// overwrite is true only after the user has confirmed replacing an existing
@@ -234,6 +249,10 @@ func New(deps Deps) Model {
 
 	m.stepInput = textinput.New()
 	m.outputInput = textinput.New()
+	m.rangeStart = textinput.New()
+	m.rangeEnd = textinput.New()
+	m.customInput = textinput.New()
+	m.toggles = map[string]bool{}
 	m.bar = progress.New(progress.WithWidth(40), progress.WithoutPercentage())
 	m.spin = spinner.New(spinner.WithSpinner(spinner.Dot))
 	m.applyStyles()
@@ -281,6 +300,9 @@ func (m *Model) applyStyles() {
 	isDark := m.styles.ChoiceDisabled.GetForeground() != lipgloss.Color("242")
 	m.stepInput.SetStyles(textinput.DefaultStyles(isDark))
 	m.outputInput.SetStyles(textinput.DefaultStyles(isDark))
+	m.rangeStart.SetStyles(textinput.DefaultStyles(isDark))
+	m.rangeEnd.SetStyles(textinput.DefaultStyles(isDark))
+	m.customInput.SetStyles(textinput.DefaultStyles(isDark))
 }
 
 // Init starts the wizard: it asks the terminal about its background and either
@@ -426,7 +448,19 @@ func (m Model) textEntryFocused() bool {
 		return !m.conflict
 	case ScreenStep:
 		step, ok := m.currentStep()
-		return ok && step.Type != tasks.StepChoice && step.Type != tasks.StepConfirm
+		if !ok {
+			return false
+		}
+		switch step.Type {
+		case tasks.StepInput, tasks.StepTimeRange:
+			// A text field owns every letter, so `q`, `e` and `j` are text.
+			return true
+		case tasks.StepResolution:
+			// Only the "Custom..." row is a text field; the presets are a list.
+			shown := m.resolution().Shown[step.ID]
+			return step.Custom && m.choiceIdx == customRowIndex(step, shown)
+		}
+		return false
 	}
 	return false
 }
@@ -459,6 +493,9 @@ func (m *Model) resize() {
 	width := visibleWidth(m.width)
 	m.stepInput.SetWidth(width - 4)
 	m.outputInput.SetWidth(width - 4)
+	m.rangeStart.SetWidth(width - 4)
+	m.rangeEnd.SetWidth(width - 4)
+	m.customInput.SetWidth(width - 4)
 	m.help.SetWidth(m.width)
 	// The bar leaves room for the percentage that follows it and for the indent
 	// the run screen gives its content.
@@ -633,11 +670,20 @@ func (m Model) helpBindings() helpView {
 			},
 		}
 	case ScreenStep:
+		short := []key.Binding{k.Up, k.Down, k.Select, k.Back, k.Quit}
+		if step, ok := m.currentStep(); ok {
+			switch step.Type {
+			case tasks.StepMulti, tasks.StepConfirm:
+				short = []key.Binding{k.Up, k.Down, k.Toggle, k.Select, k.Back, k.Quit}
+			case tasks.StepTimeRange:
+				short = []key.Binding{k.Tab, k.Select, k.Back, k.Quit}
+			}
+		}
 		return helpView{
-			short: []key.Binding{k.Up, k.Down, k.Select, k.Back, k.Quit},
+			short: short,
 			full: [][]key.Binding{
-				{k.Up, k.Down, k.Select},
-				{k.Back, k.Quit, k.Help},
+				short,
+				{k.Help},
 			},
 		}
 	case ScreenOutput:

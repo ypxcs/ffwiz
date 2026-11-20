@@ -5,10 +5,15 @@ import "charm.land/bubbles/v2/key"
 // bindings are the wizard's key bindings. One set is shared by every screen; a
 // screen simply does not list the ones it has no use for.
 type bindings struct {
-	Up     key.Binding
-	Down   key.Binding
+	Up   key.Binding
+	Down key.Binding
+	// Select confirms the answer and moves on.
 	Select key.Binding
-	Back   key.Binding
+	// Toggle flips a checkbox in a multi step or a yes/no in a confirm step.
+	Toggle key.Binding
+	// Tab moves between the two fields of a time_range step.
+	Tab  key.Binding
+	Back key.Binding
 	// BackEsc is Back without the `e` alias, for screens with a text field,
 	// where `e` is a letter (DECISIONS D14).
 	BackEsc key.Binding
@@ -45,6 +50,14 @@ func newBindings() bindings {
 		Select: key.NewBinding(
 			key.WithKeys("enter"),
 			key.WithHelp("enter", "select"),
+		),
+		Toggle: key.NewBinding(
+			key.WithKeys("space", "x"),
+			key.WithHelp("space", "toggle"),
+		),
+		Tab: key.NewBinding(
+			key.WithKeys("tab"),
+			key.WithHelp("tab", "next field"),
 		),
 		// DECISIONS D14: esc is the conventional way out, and `e` is the
 		// single-finger alternative. Text fields only honour esc, because `e`

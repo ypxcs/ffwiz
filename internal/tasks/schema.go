@@ -90,6 +90,21 @@ type Step struct {
 	// every answer of this step.
 	Skips []string `yaml:"skips"`
 
+	// Args are output arguments contributed by a confirm step when the answer
+	// is yes, e.g. ["-movflags", "+faststart"]. Ignored for other types, which
+	// contribute through their templates or their choices.
+	Args []string `yaml:"args"`
+
+	// Filters and Target let a confirm step contribute to the merged -vf/-af
+	// chain, e.g. a "burn in the timecode" toggle.
+	Filters []string     `yaml:"filters"`
+	Target  FilterTarget `yaml:"target"`
+
+	// Custom offers a "Custom..." entry alongside a resolution step's presets,
+	// so the user can type a height that is not in the list. The typed value
+	// replaces {value} in the step's template and is checked by Validate.
+	Custom bool `yaml:"custom"`
+
 	// Placeholder, Unit and MinLabel/MaxLabel are display hints for input and
 	// time_range steps.
 	Placeholder string `yaml:"placeholder"`
@@ -194,6 +209,13 @@ type Condition struct {
 	// MinDuration requires the input to be at least this long. Accepts a Go
 	// duration string ("10s", "1m30s") or a bare number of seconds.
 	MinDuration *Duration `yaml:"min_duration"`
+
+	// Platform requires the wizard to be running on this OS, e.g. "darwin".
+	// It exists because ffmpeg lists hardware encoders for platforms other than
+	// the one it is running on: h264_vaapi appears in a macOS build's -encoders
+	// listing but can never open a device there, so a requires_encoder gate is
+	// not enough to hide it (plan.md §7, DECISIONS D33).
+	Platform string `yaml:"platform"`
 
 	// AnswerIs and AnswerNot compare earlier answers, keyed by step id.
 	AnswerIs  map[string]string `yaml:"answer_is"`

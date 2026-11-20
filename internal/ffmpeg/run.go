@@ -615,10 +615,40 @@ func hintFor(res Result) string {
 	case strings.Contains(text, "No space left on device"):
 		return "the disk is full"
 	}
+	if mentionsHardwareEncoder(res.Stderr) {
+		// The encoder is present and the name is right; what failed is the
+		// device behind it (driver missing, GPU busy, no permission). ffmpeg's
+		// wording for that varies per API, so the encoder's own name in the log
+		// is the reliable signal (plan.md §7).
+		return "the hardware encoder could not start on this machine; try the software encoder instead"
+	}
 	if len(res.Stderr) > 0 {
 		return "ffmpeg reported: " + strings.TrimSpace(res.Stderr[len(res.Stderr)-1])
 	}
 	return ""
+}
+
+// mentionsHardwareEncoder reports whether the log names a hardware encoder ffwiz
+// knows about. A word-split is used rather than a substring test so that
+// "h264_nvenc" matches but a coincidental run of letters inside a path does not.
+func mentionsHardwareEncoder(lines []string) bool {
+	for _, line := range lines {
+		for _, field := range strings.FieldsFunc(line, func(r rune) bool {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				return false
+			case r == '_' || r == '-' || r == '.':
+				return false
+			default:
+				return true
+			}
+		}) {
+			if IsHardwareEncoder(field) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsLine reports whether any log line contains substr.

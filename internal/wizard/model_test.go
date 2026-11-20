@@ -140,6 +140,12 @@ func keyPress(keystroke string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "space":
+		// A space arrives as its own key code with a text value, which is what
+		// the binding matches on (§D1).
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	default:

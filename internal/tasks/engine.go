@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,23 @@ type Engine struct {
 	// produce. Nil means "assume everything is available", which is what the
 	// golden tests want.
 	Caps *ffmpeg.Capabilities
+	// Platform is the GOOS a `platform` condition is compared against. Empty
+	// means the running platform; the golden tests set it explicitly so a task
+	// gated on hardware encoders resolves the same way everywhere.
+	Platform string
+}
+
+// platform is the OS that `platform` conditions are evaluated against.
+func (e *Engine) platform() string {
+	if e.Platform != "" {
+		return e.Platform
+	}
+	return runtime.GOOS
+}
+
+// evalContext is everything a condition on this task can see.
+func (e *Engine) evalContext(answers map[string]string) EvalContext {
+	return EvalContext{Info: e.Info, Answers: answers, Platform: e.platform()}
 }
 
 // Resolution is the outcome of walking a task's steps with a set of raw answers:
@@ -86,7 +104,7 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 			continue
 		}
 
-		if !step.When.Eval(EvalContext{Info: e.Info, Answers: res.Answers}) {
+		if !step.When.Eval(e.evalContext(res.Answers)) {
 			res.Skipped[step.ID] = "does not apply: " + step.When.Explain()
 			continue
 		}
@@ -97,10 +115,10 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 		if len(hidden) > 0 {
 			res.HiddenChoices[step.ID] = hidden
 		}
-		if step.Type == StepChoice {
+		if step.Type == StepChoice || step.Type == StepMulti || step.Type == StepResolution {
 			res.Shown[step.ID] = available
 		}
-		if step.Type == StepChoice && len(available) == 0 {
+		if (step.Type == StepChoice || step.Type == StepMulti) && len(available) == 0 {
 			// The choices were removed by a `when` condition, by a missing
 			// encoder/muxer/filter, or both; the message must not claim to know
 			// which, because HiddenChoices carries the detail.
@@ -108,7 +126,7 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 			continue
 		}
 
-		value, source := e.answerFor(step, available, raw[step.ID])
+		value, source := e.answerFor(step, available, raw[step.ID], present(raw, step.ID))
 		if source == sourceNone {
 			// Nothing could be settled: no answer, no default, and - for a
 			// choice step - nothing available. Only these steps become a
@@ -133,6 +151,24 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 				res.Choices[step.ID] = chosen
 				for _, skip := range chosen.Skips {
 					markSkipped(skippedByAnswer, skip, fmt.Sprintf("not needed when %s is %q", step.ID, value))
+				}
+			}
+			if step.Type == StepResolution {
+				// A resolution's presets contribute no arguments of their own -
+				// the step's template does that - but they may still switch a
+				// later step off. A typed custom value matches no preset and so
+				// skips nothing, which is the honest reading of it.
+				for _, skip := range findChoice(available, value).Skips {
+					markSkipped(skippedByAnswer, skip, fmt.Sprintf("not needed when %s is %q", step.ID, value))
+				}
+			}
+			if step.Type == StepMulti {
+				// A multi step's `skips` come from every choice that is ticked,
+				// so that unticking one puts the later step back.
+				for _, c := range selectedChoices(available, value) {
+					for _, skip := range c.Skips {
+						markSkipped(skippedByAnswer, skip, fmt.Sprintf("not needed when %s includes %q", step.ID, c.Value))
+					}
 				}
 			}
 		}
@@ -160,17 +196,130 @@ const (
 )
 
 // answerFor decides the answer for one step.
-func (e *Engine) answerFor(step Step, available []Choice, given string) (string, answerSource) {
-	if step.Type == StepChoice {
+//
+// given is the raw answer and present says whether the answer map held the key
+// at all, which is the difference between "the user ticked nothing" and "the
+// user has not reached this step": both read as "", but only one of them should
+// fall back to a default.
+func (e *Engine) answerFor(step Step, available []Choice, given string, answered bool) (string, answerSource) {
+	switch step.Type {
+	case StepChoice:
 		return selectChoice(step, available, given)
+	case StepMulti:
+		return selectMulti(step, available, given, answered)
+	case StepResolution:
+		return selectResolution(step, available, given)
+	case StepConfirm:
+		return selectConfirm(step, given)
+	default:
+		if given != "" {
+			return given, sourceUser
+		}
+		if step.Default != "" {
+			return step.Default, sourceDefault
+		}
+		return "", sourceNone
 	}
-	if given != "" {
-		return given, sourceUser
+}
+
+// present reports whether the answers map carries a key, which is how a
+// deliberately empty answer (every checkbox unticked) is told apart from an
+// unanswered step.
+func present(answers map[string]string, id string) bool {
+	_, ok := answers[id]
+	return ok
+}
+
+// selectMulti settles a multi step: the ticked values that are actually on
+// offer, joined in the order they are offered.
+//
+// An answer that is present but empty means every box was unticked, and that is
+// an answer: falling back to the default there would re-tick boxes the user
+// cleared.
+func selectMulti(step Step, available []Choice, given string, answered bool) (string, answerSource) {
+	if answered {
+		return normaliseMulti(available, given), sourceUser
 	}
-	if step.Default != "" {
-		return step.Default, sourceDefault
+	if v := normaliseMulti(available, step.Default); v != "" {
+		return v, sourceDefault
+	}
+	if len(available) == 1 {
+		return available[0].Value, sourceInferred
 	}
 	return "", sourceNone
+}
+
+// normaliseMulti keeps only the ticked values that are offered, in offer order.
+func normaliseMulti(available []Choice, answer string) string {
+	selected := selectedChoices(available, answer)
+	if len(selected) == 0 {
+		return ""
+	}
+	values := make([]string, 0, len(selected))
+	for _, c := range selected {
+		values = append(values, c.Value)
+	}
+	return strings.Join(values, ",")
+}
+
+// selectResolution settles a resolution step. A value that is not one of the
+// presets is a typed one, which is allowed only when the step offers a custom
+// field and only when it passes the step's own validation.
+func selectResolution(step Step, available []Choice, given string) (string, answerSource) {
+	if given != "" && !findChoiceOK(available, given) {
+		if step.Custom && step.ValidateValue(given) == nil {
+			return given, sourceUser
+		}
+		// Neither a preset nor a legal value: fall back to the default rather
+		// than build a command that would fail.
+		return selectChoice(step, available, "")
+	}
+	return selectChoice(step, available, given)
+}
+
+// selectConfirm settles a yes/no step.
+//
+// A confirm never has "no answer": a toggle that adds something must default to
+// not adding it, so an undeclared answer is "no" rather than a placeholder. The
+// source is *inferred* in that case, which keeps it distinguishable from a
+// default the YAML asked for.
+func selectConfirm(step Step, given string) (string, answerSource) {
+	if given != "" {
+		return normaliseYesNo(given), sourceUser
+	}
+	if step.Default != "" {
+		return normaliseYesNo(step.Default), sourceDefault
+	}
+	return confirmNo, sourceInferred
+}
+
+// Answer values for a confirm step. They are spelled out because they appear in
+// `when: {answer_is: ...}` conditions in YAML.
+const (
+	confirmYes = "yes"
+	confirmNo  = "no"
+)
+
+// normaliseYesNo maps the spellings a YAML author might use onto the two
+// canonical answers, so `default: true` and `default: "yes"` behave the same.
+func normaliseYesNo(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "yes", "true", "on", "1":
+		return confirmYes
+	default:
+		return confirmNo
+	}
+}
+
+// Answer reports whether a confirm-style answer means "yes".
+func (r Resolution) Yes(stepID string) bool {
+	return r.Answers[stepID] == confirmYes
+}
+
+// Selected returns the choices ticked in a multi step, in the order they are
+// offered. The answer is a comma-separated list of choice values.
+func (r Resolution) Selected(stepID string) []Choice {
+	return selectedChoices(r.Shown[stepID], r.Answers[stepID])
 }
 
 // markSkipped records the first reason a step is switched off; a later skip of
@@ -187,7 +336,7 @@ func markSkipped(reasons map[string]string, stepID, reason string) {
 // capability is assumed present.
 func (e *Engine) availableChoices(step Step, answers map[string]string) (available, hidden []Choice) {
 	for _, c := range step.Choices {
-		if c.When != nil && !c.When.Eval(EvalContext{Info: e.Info, Answers: answers}) {
+		if c.When != nil && !c.When.Eval(e.evalContext(answers)) {
 			hidden = append(hidden, c)
 			continue
 		}
@@ -198,6 +347,25 @@ func (e *Engine) availableChoices(step Step, answers map[string]string) (availab
 		available = append(available, c)
 	}
 	return available, hidden
+}
+
+// selectedChoices picks the ticked choices out of a multi answer, keeping the
+// order they are offered rather than the order they were ticked.
+func selectedChoices(choices []Choice, answer string) []Choice {
+	if answer == "" {
+		return nil
+	}
+	wanted := strings.Split(answer, ",")
+	var out []Choice
+	for _, c := range choices {
+		for _, v := range wanted {
+			if c.Value == v {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // unavailable returns a human-readable reason when a choice cannot be produced
@@ -378,30 +546,43 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 			continue
 		}
 
-		choice, isChoice := res.Choices[step.ID]
-		if !isChoice {
-			// A non-choice step contributes through its template.
-			outputArgs, inputArgs := templateArgs(step, res.Answers[step.ID])
+		switch step.Type {
+		case StepChoice:
+			applyChoice(&req, res.Choices[step.ID])
+
+		case StepResolution:
+			// The step's template turns the answer into arguments, whether it
+			// came from a preset or from the custom field.
+			outputArgs, inputArgs := templateArgs(step, res)
 			req.Inputs[0].Args = append(req.Inputs[0].Args, inputArgs...)
 			req.OutputArgs = append(req.OutputArgs, outputArgs...)
-			continue
-		}
 
-		req.Inputs[0].Args = append(req.Inputs[0].Args, choice.InputArgs...)
-		req.OutputArgs = append(req.OutputArgs, choice.Args...)
-		req.Maps = append(req.Maps, choice.Maps...)
-		if choice.FilterComplex != nil {
-			req.FilterComplex = append(req.FilterComplex, choice.FilterComplex...)
-		}
-		switch choice.Target {
-		case FilterAudio:
-			req.AudioFilters = append(req.AudioFilters, choice.Filters...)
+		case StepMulti:
+			// Every ticked option contributes, in the order it is offered, so
+			// the command does not depend on the order the user ticked them.
+			for _, c := range res.Selected(step.ID) {
+				applyChoice(&req, c)
+			}
+
+		case StepConfirm:
+			if !res.Yes(step.ID) {
+				continue
+			}
+			req.OutputArgs = append(req.OutputArgs, step.Args...)
+			if len(step.Filters) > 0 {
+				if step.Target == FilterAudio {
+					req.AudioFilters = append(req.AudioFilters, step.Filters...)
+				} else {
+					req.VideoFilters = append(req.VideoFilters, step.Filters...)
+				}
+			}
+
 		default:
-			req.VideoFilters = append(req.VideoFilters, choice.Filters...)
+			// A non-choice step contributes through its template.
+			outputArgs, inputArgs := templateArgs(step, res)
+			req.Inputs[0].Args = append(req.Inputs[0].Args, inputArgs...)
+			req.OutputArgs = append(req.OutputArgs, outputArgs...)
 		}
-		// OutputArgs are emitted after filters and maps, which matters when a
-		// flag such as -f depends on a mapping having been established.
-		req.OutputArgs = append(req.OutputArgs, choice.OutputArgs...)
 	}
 
 	if opts.Output == "" {
@@ -424,6 +605,27 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 
 	cmd, err := ffmpeg.Build(req)
 	return cmd, pending, res, err
+}
+
+// applyChoice folds one selected option into the request. It is shared by
+// single-choice steps and by every ticked option of a multi step, so the two
+// cannot drift apart in argument order.
+func applyChoice(req *ffmpeg.Request, c Choice) {
+	req.Inputs[0].Args = append(req.Inputs[0].Args, c.InputArgs...)
+	req.OutputArgs = append(req.OutputArgs, c.Args...)
+	req.Maps = append(req.Maps, c.Maps...)
+	if c.FilterComplex != nil {
+		req.FilterComplex = append(req.FilterComplex, c.FilterComplex...)
+	}
+	switch c.Target {
+	case FilterAudio:
+		req.AudioFilters = append(req.AudioFilters, c.Filters...)
+	default:
+		req.VideoFilters = append(req.VideoFilters, c.Filters...)
+	}
+	// OutputArgs are emitted after filters and maps, which matters when a
+	// flag such as -f depends on a mapping having been established.
+	req.OutputArgs = append(req.OutputArgs, c.OutputArgs...)
 }
 
 // DefaultOutput derives an output path next to the input, e.g.
@@ -466,15 +668,27 @@ func (r Resolution) OutputExt() string {
 // expectedDuration is how long the output should be, used for the progress bar
 // (DECISIONS D3).
 //
-// For tasks that do not change the length that is the input duration. A trim
-// shortens it, which M5 adds through the same mechanism; a speed change scales
-// it through Resolution.TimeScale. A zero result means "unknown", and the UI
-// falls back to an indeterminate bar.
+// The input's length is the starting point. A trim shortens it, a speed change
+// scales it through Resolution.TimeScale. A zero result means "unknown", and the
+// UI falls back to an indeterminate bar.
 func (e *Engine) expectedDuration(res Resolution) time.Duration {
 	if e.Info == nil {
 		return 0
 	}
 	duration := e.Info.Duration()
+
+	// A time_range step cuts the output down; several of them would apply to
+	// the same timeline, so the last one wins rather than compounding, which is
+	// what the command would actually do.
+	for _, step := range res.Active {
+		if step.Type != StepTimeRange {
+			continue
+		}
+		if r, err := ParseRange(res.Answers[step.ID]); err == nil {
+			duration = r.Duration()
+		}
+	}
+
 	if res.TimeScale > 0 && res.TimeScale != 1 {
 		duration = time.Duration(float64(duration) / res.TimeScale)
 	}
@@ -485,18 +699,41 @@ var placeholderRe = regexp.MustCompile(`\{([a-z_]+)\}`)
 
 // templateArgs expands a step's templates into arguments: the output-side ones
 // from Template (e.g. ["-t", "{value}"]) and the input-side ones from
-// InputTemplate (e.g. ["-ss", "{value}"]).
+// InputTemplate (e.g. ["-ss", "{start}"]).
 //
-// Only {value} is supported. Anything else is a load-time validation error, so
-// this cannot silently emit a literal "{foo}" into a command.
-func templateArgs(step Step, value string) (outputArgs, inputArgs []string) {
-	if value == "" {
+// The placeholders a step may use depend on its type, and anything else is a
+// load-time validation error, so this cannot silently emit a literal "{foo}"
+// into a command:
+//
+//   - {value}: the step's answer, for input, resolution and custom values.
+//   - {start}, {end}, {duration}: the parts of a time_range answer.
+func templateArgs(step Step, res Resolution) (outputArgs, inputArgs []string) {
+	answer := res.Answers[step.ID]
+	if answer == "" {
 		return nil, nil
 	}
+
+	vars := map[string]string{"value": answer}
+	if step.Type == StepTimeRange {
+		if r, err := ParseRange(answer); err == nil {
+			vars["start"] = FormatTimecode(r.Start)
+			vars["end"] = FormatTimecode(r.End)
+			vars["duration"] = FormatTimecode(r.Duration())
+		}
+	}
+
 	expand := func(tmpl []string) []string {
 		args := make([]string, 0, len(tmpl))
 		for _, t := range tmpl {
-			args = append(args, strings.ReplaceAll(t, "{value}", value))
+			args = append(args, placeholderRe.ReplaceAllStringFunc(t, func(m string) string {
+				name := placeholderRe.FindStringSubmatch(m)[1]
+				if v, ok := vars[name]; ok {
+					return v
+				}
+				// Unreachable for a loaded task; leaving the placeholder in
+				// place makes a mistake visible rather than silent.
+				return m
+			}))
 		}
 		return args
 	}

@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -9,13 +10,15 @@ import (
 )
 
 // EvalContext is everything a condition can be evaluated against: the probed
-// input plus the answers collected so far.
+// input, the answers collected so far, and the platform the wizard runs on.
 type EvalContext struct {
 	// Info is the probed input. It is nil before a file is chosen, in which
 	// case InputHas is false and MinDuration holds only for 0.
 	Info *ffmpeg.MediaInfo
 	// Answers holds resolved answers, keyed by step id.
 	Answers map[string]string
+	// Platform is the GOOS to compare a `platform` condition against.
+	Platform string
 }
 
 // Eval reports whether the condition holds in the given context.
@@ -29,6 +32,10 @@ func (c *Condition) Eval(ec EvalContext) bool {
 	}
 
 	if c.InputHas != "" && !inputHas(ec.Info, c.InputHas) {
+		return false
+	}
+
+	if c.Platform != "" && c.Platform != ec.Platform {
 		return false
 	}
 
@@ -101,6 +108,9 @@ func (c *Condition) Explain() string {
 	if c.MinDuration != nil {
 		parts = append(parts, "needs an input at least "+c.MinDuration.String()+" long")
 	}
+	if c.Platform != "" {
+		parts = append(parts, "only applies on "+platformName(c.Platform))
+	}
 	for _, stepID := range sortedKeys(c.AnswerIs) {
 		parts = append(parts, fmt.Sprintf("only applies when %s is %q", stepID, c.AnswerIs[stepID]))
 	}
@@ -162,6 +172,28 @@ func inputHas(info *ffmpeg.MediaInfo, want string) bool {
 // validInputHas lists the accepted input_has values, for validation messages.
 var validInputHas = []string{"video", "audio", "subtitles"}
 
+// validPlatforms are the GOOS values a `platform` condition may name. It is a
+// closed list because the typo it prevents - "macos" for "darwin" - would
+// otherwise hide a choice for ever with no error to explain why.
+var validPlatforms = []string{
+	"aix", "android", "darwin", "dragonfly", "freebsd", "illumos", "ios", "js",
+	"linux", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows",
+}
+
+// platformName is the human name for a GOOS value, for explanations.
+func platformName(goos string) string {
+	switch goos {
+	case "darwin":
+		return "macOS"
+	case "linux":
+		return "Linux"
+	case "windows":
+		return "Windows"
+	default:
+		return goos
+	}
+}
+
 // validate checks a condition tree for unknown references, so a typo like
 // `answer_is: {vcodec: cpoy}` or `input_has: vidio` is a load-time error rather
 // than a silently always-false gate.
@@ -203,6 +235,10 @@ func (c *Condition) validate(stepIDs map[string]int, stepIndex int) []error {
 	}
 	checkRef("answer_is", c.AnswerIs)
 	checkRef("answer_not", c.AnswerNot)
+
+	if c.Platform != "" && !slices.Contains(validPlatforms, c.Platform) {
+		errs = append(errs, fmt.Errorf("platform: unknown value %q (want one of %v)", c.Platform, validPlatforms))
+	}
 
 	for i := range c.Any {
 		errs = append(errs, c.Any[i].validate(stepIDs, stepIndex)...)

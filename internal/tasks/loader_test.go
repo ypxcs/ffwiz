@@ -263,7 +263,7 @@ func TestLoadReportsBadYAML(t *testing.T) {
 		{
 			name:    "unknown template placeholder",
 			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: input, template: [\"-ss\", \"{start}\"] }\n",
-			want:    "not supported",
+			want:    "not available for type input",
 		},
 		{
 			name:    "bad regex",

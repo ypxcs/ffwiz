@@ -289,6 +289,22 @@ func TestDiagnose(t *testing.T) {
 			wantHint: "Something odd happened",
 		},
 		{
+			// A hardware encoder is listed by almost every build; whether the
+			// device behind it works is another matter (plan.md §7).
+			name:     "a hardware encoder that cannot start is explained",
+			res:      Result{Err: errExit, ExitCode: 1, Stderr: []string{"[h264_videotoolbox @ 0x7f] Failed to init VTCompressionSession"}},
+			output:   missing,
+			want:     OutcomeFailed,
+			wantHint: "try the software encoder",
+		},
+		{
+			name:     "mentioning a hardware encoder in an unrelated path is not enough",
+			res:      Result{Err: errExit, ExitCode: 1, Stderr: []string{"Cannot open /media/h264_nvenc_backup.mp4"}},
+			output:   missing,
+			want:     OutcomeFailed,
+			wantHint: "Cannot open",
+		},
+		{
 			name:       "a failure with no log at all gets no invented hint",
 			res:        Result{Err: errExit, ExitCode: 1},
 			output:     missing,

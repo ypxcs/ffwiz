@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ValidateValue reports why an answer is not acceptable for this step, or nil.
@@ -82,6 +83,9 @@ var ErrValueRequired = errors.New("a value is required")
 // RequiresValue reports whether the step must have a non-empty answer before it
 // can be left. A step that contributes arguments cannot be left blank: the
 // template would emit an empty string straight into the command line.
+//
+// A confirm never requires a value: it is a toggle, and an unanswered toggle
+// means "no" rather than "ask me again" (see selectConfirm).
 func (s Step) RequiresValue() bool {
 	switch s.Type {
 	case StepChoice, StepMulti, StepConfirm:
@@ -98,4 +102,126 @@ func (s Step) CheckAnswer(value string) error {
 		return ErrValueRequired
 	}
 	return s.ValidateValue(value)
+}
+
+// ── time ranges ─────────────────────────────────────────────────────────────
+
+// Range is a start and an end on the input's timeline.
+type Range struct {
+	Start time.Duration
+	End   time.Duration
+}
+
+// Duration is how much of the input the range keeps.
+func (r Range) Duration() time.Duration { return r.End - r.Start }
+
+// ErrNotATime is returned for a time that cannot be read.
+var ErrNotATime = errors.New("not a time")
+
+// ParseTime reads a time in any of the forms ffmpeg accepts and that a person
+// is likely to type: plain seconds ("30", "12.5"), or a clock ("0:30",
+// "00:00:30.250", "1:02:03").
+//
+// A bare number is seconds, not minutes: `-ss 90` seeks to 1:30, and a parser
+// that read "90" as 90 minutes would silently produce a wrong command.
+func ParseTime(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("%w: it is empty", ErrNotATime)
+	}
+
+	if !strings.Contains(s, ":") {
+		secs, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %q", ErrNotATime, s)
+		}
+		if secs < 0 {
+			return 0, fmt.Errorf("%w: %q is negative", ErrNotATime, s)
+		}
+		return time.Duration(secs * float64(time.Second)).Round(time.Millisecond), nil
+	}
+
+	parts := strings.Split(s, ":")
+	if len(parts) > 3 {
+		return 0, fmt.Errorf("%w: %q has too many colons", ErrNotATime, s)
+	}
+	var total float64
+	for i, part := range parts {
+		v, err := strconv.ParseFloat(part, 64)
+		if err != nil || v < 0 {
+			return 0, fmt.Errorf("%w: %q", ErrNotATime, s)
+		}
+		// The last field is seconds; the ones before it are minutes and hours.
+		switch len(parts) - 1 - i {
+		case 0:
+			total += v
+		case 1:
+			total += v * 60
+		default:
+			total += v * 3600
+		}
+	}
+	return time.Duration(total * float64(time.Second)).Round(time.Millisecond), nil
+}
+
+// FormatTimecode renders a duration the way it appears in a command preview and
+// in a saved answer: HH:MM:SS.mmm. A single spelling means a value that has been
+// through the wizard once is read back unchanged.
+func FormatTimecode(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	ms := d.Round(time.Millisecond)
+	hours := ms / time.Hour
+	ms -= hours * time.Hour
+	minutes := ms / time.Minute
+	ms -= minutes * time.Minute
+	return fmt.Sprintf("%02d:%02d:%06.3f", hours, minutes, ms.Seconds())
+}
+
+// rangeSeparator joins the two halves of a time_range answer. A comma cannot
+// appear inside a time, so the split is unambiguous.
+const rangeSeparator = ","
+
+// ParseRange reads a time_range answer ("start,end") into its two times.
+func ParseRange(answer string) (Range, error) {
+	start, end, ok := strings.Cut(answer, rangeSeparator)
+	if !ok {
+		return Range{}, fmt.Errorf("%w: %q is not a start,end pair", ErrNotATime, answer)
+	}
+	s, err := ParseTime(start)
+	if err != nil {
+		return Range{}, fmt.Errorf("start: %w", err)
+	}
+	e, err := ParseTime(end)
+	if err != nil {
+		return Range{}, fmt.Errorf("end: %w", err)
+	}
+	if e <= s {
+		return Range{}, fmt.Errorf("the end (%s) is not after the start (%s)",
+			FormatTimecode(e), FormatTimecode(s))
+	}
+	return Range{Start: s, End: e}, nil
+}
+
+// CheckRangeAnswer validates a time_range answer against the input's length.
+//
+// A range that runs past the end of the input is not an error ffmpeg reports
+// clearly - it simply writes a shorter file - so the wizard refuses it here
+// rather than letting the user think they cut to 5 minutes of a 2 minute clip.
+// A zero length means the input duration is unknown, and only the ordering of
+// the two times is checked.
+func (s Step) CheckRangeAnswer(answer string, input time.Duration) error {
+	if strings.TrimSpace(answer) == "" {
+		return ErrValueRequired
+	}
+	r, err := ParseRange(answer)
+	if err != nil {
+		return err
+	}
+	if input > 0 && r.End > input+time.Millisecond {
+		return fmt.Errorf("the end (%s) is past the end of the input (%s)",
+			FormatTimecode(r.End), FormatTimecode(input))
+	}
+	return nil
 }

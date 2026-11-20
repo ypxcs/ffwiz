@@ -3,6 +3,7 @@ package wizard
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
@@ -59,6 +60,15 @@ func (m Model) currentStep() (tasks.Step, bool) {
 	return steps[m.stepIndex], true
 }
 
+// customRowIndex is the row number of a resolution step's "Custom..." entry,
+// which sits after the presets, or -1 when the step offers none.
+func customRowIndex(step tasks.Step, shown []tasks.Choice) int {
+	if step.Type != tasks.StepResolution || !step.Custom {
+		return -1
+	}
+	return len(shown)
+}
+
 // syncStep points the widgets at the current step, restoring whatever answer it
 // already had, so stepping back and forward never loses a choice (plan.md §6.4).
 func (m *Model) syncStep() {
@@ -75,25 +85,89 @@ func (m *Model) syncStep() {
 
 	step := steps[m.stepIndex]
 	res := m.resolution()
+	current := res.Answers[step.ID]
 
-	if step.Type == tasks.StepChoice {
+	// Only one field is ever live; blur the rest so a stray keystroke cannot
+	// land somewhere invisible.
+	m.stepInput.Blur()
+	m.rangeStart.Blur()
+	m.rangeEnd.Blur()
+	m.customInput.Blur()
+
+	switch step.Type {
+	case tasks.StepChoice:
 		shown := res.Shown[step.ID]
-		m.choiceIdx = 0
-		if current := res.Answers[step.ID]; current != "" {
-			for i, c := range shown {
-				if c.Value == current {
-					m.choiceIdx = i
-					break
+		m.choiceIdx = indexOfChoice(shown, current)
+		if m.choiceIdx < 0 {
+			m.choiceIdx = 0
+		}
+
+	case tasks.StepMulti:
+		shown := res.Shown[step.ID]
+		// Rebuild the ticks from the resolved answer: a multi answer is a
+		// comma-separated list of the values that are ticked.
+		m.toggles = map[string]bool{}
+		for _, c := range shown {
+			for _, v := range strings.Split(current, ",") {
+				if v != "" && c.Value == v {
+					m.toggles[c.Value] = true
 				}
 			}
 		}
-		return
-	}
+		m.choiceIdx = 0
 
-	m.stepInput.Placeholder = step.Placeholder
-	m.stepInput.SetValue(res.Answers[step.ID])
-	m.stepInput.SetCursor(utf8.RuneCountInString(res.Answers[step.ID]))
-	m.stepInput.Focus()
+	case tasks.StepConfirm:
+		m.confirmYes = res.Yes(step.ID)
+
+	case tasks.StepResolution:
+		shown := res.Shown[step.ID]
+		m.choiceIdx = indexOfChoice(shown, current)
+		if m.choiceIdx < 0 {
+			// Not a preset: either a typed value (put it back in the field) or
+			// nothing chosen yet (start on the first preset).
+			if row := customRowIndex(step, shown); row >= 0 && current != "" {
+				m.choiceIdx = row
+				m.customInput.SetValue(current)
+				m.customInput.SetCursor(utf8.RuneCountInString(current))
+			} else {
+				m.choiceIdx = 0
+			}
+		}
+		if m.choiceIdx == customRowIndex(step, shown) {
+			m.customInput.Focus()
+		}
+
+	case tasks.StepTimeRange:
+		start, end := "", ""
+		if r, err := tasks.ParseRange(current); err == nil {
+			start, end = tasks.FormatTimecode(r.Start), tasks.FormatTimecode(r.End)
+		}
+		m.rangeStart.SetValue(start)
+		m.rangeStart.SetCursor(utf8.RuneCountInString(start))
+		m.rangeEnd.SetValue(end)
+		m.rangeEnd.SetCursor(utf8.RuneCountInString(end))
+		m.rangeField = 0
+		m.rangeStart.Focus()
+
+	default:
+		m.stepInput.Placeholder = step.Placeholder
+		m.stepInput.SetValue(current)
+		m.stepInput.SetCursor(utf8.RuneCountInString(current))
+		m.stepInput.Focus()
+	}
+}
+
+// indexOfChoice returns the row a value sits on, or -1.
+func indexOfChoice(choices []tasks.Choice, value string) int {
+	if value == "" {
+		return -1
+	}
+	for i, c := range choices {
+		if c.Value == value {
+			return i
+		}
+	}
+	return -1
 }
 
 // stepBody renders the current question.
@@ -121,25 +195,74 @@ func (m Model) stepBody(width int) string {
 		for i, c := range shown {
 			b.WriteString(m.choiceLine(c, current, i == m.choiceIdx, width) + "\n")
 		}
-		if note := m.hiddenNote(step); note != "" {
-			b.WriteString("\n" + m.styles.Muted.Render("not offered: "+note) + "\n")
+		b.WriteString(m.hiddenNoteBlock(step))
+
+	case tasks.StepMulti:
+		shown := res.Shown[step.ID]
+		if len(shown) == 0 {
+			b.WriteString(m.styles.Error.Render("no option is available for this question") + "\n")
+		}
+		for i, c := range shown {
+			b.WriteString(m.checkLine(c, m.toggles[c.Value], i == m.choiceIdx, width) + "\n")
+		}
+		b.WriteString(m.hiddenNoteBlock(step))
+
+	case tasks.StepConfirm:
+		b.WriteString(m.confirmLine("Yes", m.confirmYes, false, width) + "\n")
+		b.WriteString(m.confirmLine("No", !m.confirmYes, true, width) + "\n")
+
+	case tasks.StepResolution:
+		shown := res.Shown[step.ID]
+		current := res.Answers[step.ID]
+		// A typed value matches no preset, so no preset is ticked.
+		if indexOfChoice(shown, current) < 0 {
+			current = ""
+		}
+		for i, c := range shown {
+			b.WriteString(m.choiceLine(c, current, i == m.choiceIdx, width) + "\n")
+		}
+		if row := customRowIndex(step, shown); row >= 0 {
+			cursor := "  "
+			onRow := m.choiceIdx == row
+			if onRow {
+				cursor = m.styles.Key.Render("> ")
+			}
+			label := "Custom..."
+			if onRow {
+				label = lipgloss.NewStyle().Bold(true).Render(label)
+			} else {
+				label = m.styles.Muted.Render(label)
+			}
+			b.WriteString(cursor + label + "\n")
+			if onRow {
+				b.WriteString("  " + m.customInput.View() + "\n")
+			}
+		}
+		b.WriteString(m.hiddenNoteBlock(step))
+
+	case tasks.StepTimeRange:
+		b.WriteString(m.rangeFieldLine(stepStartLabel(step), m.rangeStart.View(), m.rangeField == 0) + "\n")
+		b.WriteString(m.rangeFieldLine(stepEndLabel(step), m.rangeEnd.View(), m.rangeField == 1) + "\n")
+		if len := m.inputLength(); len != "" {
+			b.WriteString("\n" + m.styles.Muted.Render("the input is "+len+" long") + "\n")
 		}
 
-	case tasks.StepInput:
+	default:
 		b.WriteString("  " + m.stepInput.View() + "\n")
 		if step.Unit != "" {
 			b.WriteString("  " + m.styles.Muted.Render("in "+step.Unit) + "\n")
 		}
-
-	default:
-		// The remaining step types (multi, time_range, resolution, confirm) are
-		// M5 work (plan.md §10). Saying so is better than rendering something
-		// that looks like a control but is not one.
-		b.WriteString(m.styles.Warning.Render(
-			fmt.Sprintf("this question type (%s) is not available yet; it is left at its default", step.Type)) + "\n")
 	}
 
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// hiddenNoteBlock renders the "not offered" explanation as its own paragraph.
+func (m Model) hiddenNoteBlock(step tasks.Step) string {
+	if note := m.hiddenNote(step); note != "" {
+		return "\n" + m.styles.Muted.Render("not offered: "+note) + "\n"
+	}
+	return ""
 }
 
 // choiceLine renders one option. The cursor marks where the user is; the tick
@@ -164,6 +287,88 @@ func (m Model) choiceLine(c tasks.Choice, current string, highlighted bool, widt
 		label += m.styles.Muted.Render("  (default)")
 	}
 	return cursor + label
+}
+
+// checkLine renders one checkbox of a multi step.
+func (m Model) checkLine(c tasks.Choice, ticked, highlighted bool, width int) string {
+	cursor := "  "
+	if highlighted {
+		cursor = m.styles.Key.Render("> ")
+	}
+	box := "[ ]"
+	if ticked {
+		box = "[x]"
+	}
+	label := truncate(c.Label, max(width-16, 8))
+	switch {
+	case ticked:
+		label = m.styles.ChoiceCurrent.Render(label)
+	case highlighted:
+		label = lipgloss.NewStyle().Bold(true).Render(label)
+	default:
+		label = m.styles.Muted.Render(label)
+	}
+	if c.Default {
+		label += m.styles.Muted.Render("  (default)")
+	}
+	return cursor + m.styles.Key.Render(box) + " " + label
+}
+
+// confirmLine renders one half of a yes/no toggle.
+func (m Model) confirmLine(label string, selected, highlighted bool, width int) string {
+	cursor := "  "
+	if highlighted {
+		cursor = m.styles.Key.Render("> ")
+	}
+	mark := "( )"
+	switch {
+	case selected:
+		mark, label = "(•)", m.styles.ChoiceCurrent.Render(label)
+	case highlighted:
+		label = lipgloss.NewStyle().Bold(true).Render(label)
+	default:
+		label = m.styles.Muted.Render(label)
+	}
+	return cursor + m.styles.Key.Render(mark) + " " + truncate(label, max(width-14, 8))
+}
+
+// rangeFieldLine renders one time_range field with a label and a cursor.
+func (m Model) rangeFieldLine(label, value string, focused bool) string {
+	cursor := "  "
+	if focused {
+		cursor = m.styles.Key.Render("> ")
+	}
+	name := m.styles.Label.Render(fmt.Sprintf("%-6s", label+":"))
+	return cursor + name + " " + value
+}
+
+// stepStartLabel and stepEndLabel name a time_range step's two fields, falling
+// back to From/To when the YAML does not say.
+func stepStartLabel(step tasks.Step) string {
+	if step.MinLabel != "" {
+		return step.MinLabel
+	}
+	return "From"
+}
+
+func stepEndLabel(step tasks.Step) string {
+	if step.MaxLabel != "" {
+		return step.MaxLabel
+	}
+	return "To"
+}
+
+// inputLength renders the input's duration for the time_range hint, or "" when
+// it is unknown.
+func (m Model) inputLength() string {
+	if m.info == nil {
+		return ""
+	}
+	d := m.info.Duration()
+	if d <= 0 {
+		return ""
+	}
+	return tasks.FormatTimecode(d)
 }
 
 // hiddenNote explains the options a step is not offering: either the local
@@ -198,11 +403,28 @@ func (m Model) hintStep() string {
 	if !ok {
 		return ""
 	}
-	if step.Type == tasks.StepChoice {
+	switch step.Type {
+	case tasks.StepChoice, tasks.StepMulti:
 		shown := m.resolution().Shown[step.ID]
 		if m.choiceIdx >= 0 && m.choiceIdx < len(shown) && shown[m.choiceIdx].Hint != "" {
 			return shown[m.choiceIdx].Hint
 		}
+	case tasks.StepResolution:
+		shown := m.resolution().Shown[step.ID]
+		if m.choiceIdx >= 0 && m.choiceIdx < len(shown) && shown[m.choiceIdx].Hint != "" {
+			return shown[m.choiceIdx].Hint
+		}
+		if m.choiceIdx == customRowIndex(step, shown) {
+			if step.Hint != "" {
+				return step.Hint
+			}
+			return step.Prompt + ": type a value and press enter"
+		}
+	case tasks.StepConfirm:
+		if m.confirmYes {
+			return "This will be added to the command."
+		}
+		return "This is left out of the command."
 	}
 	return step.Hint
 }
@@ -214,7 +436,8 @@ func (m Model) updateStep(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.
 		return m.enterOutput()
 	}
 
-	if step.Type == tasks.StepChoice {
+	switch step.Type {
+	case tasks.StepChoice:
 		if !isKey {
 			return m, nil
 		}
@@ -230,22 +453,164 @@ func (m Model) updateStep(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.
 			return m.stepAdvance()
 		}
 		return m, nil
-	}
 
-	// Everything else is a text field: only esc leaves, because `e` and `q` are
-	// letters here (DECISIONS D14).
-	if isKey {
+	case tasks.StepMulti:
+		if !isKey {
+			return m, nil
+		}
+		shown := m.resolution().Shown[step.ID]
 		switch {
-		case key.Matches(keyMsg, m.keys.BackEsc):
+		case key.Matches(keyMsg, m.keys.Back):
 			return m.stepBack()
+		case key.Matches(keyMsg, m.keys.Up):
+			m.choiceIdx = wrap(m.choiceIdx-1, len(shown))
+		case key.Matches(keyMsg, m.keys.Down):
+			m.choiceIdx = wrap(m.choiceIdx+1, len(shown))
+		case key.Matches(keyMsg, m.keys.Toggle):
+			if m.choiceIdx >= 0 && m.choiceIdx < len(shown) {
+				v := shown[m.choiceIdx].Value
+				m.toggles[v] = !m.toggles[v]
+			}
 		case key.Matches(keyMsg, m.keys.Select):
 			return m.stepAdvance()
 		}
+		return m, nil
+
+	case tasks.StepConfirm:
+		if !isKey {
+			return m, nil
+		}
+		switch {
+		case key.Matches(keyMsg, m.keys.Back):
+			return m.stepBack()
+		case key.Matches(keyMsg, m.keys.Up), key.Matches(keyMsg, m.keys.Down), key.Matches(keyMsg, m.keys.Toggle):
+			m.confirmYes = !m.confirmYes
+		case key.Matches(keyMsg, m.keys.Select):
+			return m.stepAdvance()
+		}
+		return m, nil
+
+	case tasks.StepResolution:
+		shown := m.resolution().Shown[step.ID]
+		rows := len(shown)
+		if customRowIndex(step, shown) >= 0 {
+			rows++
+		}
+		onCustom := customRowIndex(step, shown) >= 0 && m.choiceIdx == customRowIndex(step, shown)
+		if isKey {
+			switch {
+			case key.Matches(keyMsg, m.keys.Back):
+				return m.stepBack()
+			case key.Matches(keyMsg, m.keys.Up):
+				m.choiceIdx = wrap(m.choiceIdx-1, rows)
+				m.focusResolutionRow(step, shown)
+			case key.Matches(keyMsg, m.keys.Down):
+				m.choiceIdx = wrap(m.choiceIdx+1, rows)
+				m.focusResolutionRow(step, shown)
+			case key.Matches(keyMsg, m.keys.Select):
+				return m.stepAdvance()
+			}
+		}
+		if onCustom {
+			// Everything else is typing. j/k move the cursor rather than typing
+			// letters, but a custom resolution is a number, so that costs
+			// nothing.
+			var cmd tea.Cmd
+			m.customInput, cmd = m.customInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case tasks.StepTimeRange:
+		if isKey {
+			switch {
+			case key.Matches(keyMsg, m.keys.BackEsc):
+				return m.stepBack()
+			case key.Matches(keyMsg, m.keys.Tab):
+				m.switchRangeField()
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Select):
+				return m.rangeAdvance(step)
+			}
+		}
+		var cmd tea.Cmd
+		if m.rangeField == 0 {
+			m.rangeStart, cmd = m.rangeStart.Update(msg)
+		} else {
+			m.rangeEnd, cmd = m.rangeEnd.Update(msg)
+		}
+		return m, cmd
+
+	default:
+		// A single text field: only esc leaves, because `e` and `q` are letters
+		// here (DECISIONS D14).
+		if isKey {
+			switch {
+			case key.Matches(keyMsg, m.keys.BackEsc):
+				return m.stepBack()
+			case key.Matches(keyMsg, m.keys.Select):
+				return m.stepAdvance()
+			}
+		}
+		var cmd tea.Cmd
+		m.stepInput, cmd = m.stepInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// focusResolutionRow moves the text focus onto the "Custom..." row when the
+// cursor is there, and off it otherwise.
+func (m *Model) focusResolutionRow(step tasks.Step, shown []tasks.Choice) {
+	if row := customRowIndex(step, shown); row >= 0 && m.choiceIdx == row {
+		m.customInput.Focus()
+		return
+	}
+	m.customInput.Blur()
+}
+
+// switchRangeField moves the cursor between the two time_range fields.
+func (m *Model) switchRangeField() {
+	if m.rangeField == 0 {
+		m.rangeField = 1
+		m.rangeStart.Blur()
+		m.rangeEnd.Focus()
+	} else {
+		m.rangeField = 0
+		m.rangeEnd.Blur()
+		m.rangeStart.Focus()
+	}
+}
+
+// rangeAdvance walks a time_range step: the first enter moves from the start
+// field to the end field, the second records the range.
+func (m Model) rangeAdvance(step tasks.Step) (tea.Model, tea.Cmd) {
+	if m.rangeField == 0 {
+		if _, err := tasks.ParseTime(m.rangeStart.Value()); err != nil {
+			m.notice, m.noticeIsError = "start: "+err.Error(), true
+			return m, nil
+		}
+		m.switchRangeField()
+		m.notice, m.noticeIsError = "", false
+		return m, nil
 	}
 
-	var cmd tea.Cmd
-	m.stepInput, cmd = m.stepInput.Update(msg)
-	return m, cmd
+	answer := strings.TrimSpace(m.rangeStart.Value()) + "," + strings.TrimSpace(m.rangeEnd.Value())
+	var input time.Duration
+	if m.info != nil {
+		input = m.info.Duration()
+	}
+	if err := step.CheckRangeAnswer(answer, input); err != nil {
+		m.notice, m.noticeIsError = err.Error(), true
+		return m, nil
+	}
+	r, err := tasks.ParseRange(answer)
+	if err != nil {
+		m.notice, m.noticeIsError = err.Error(), true
+		return m, nil
+	}
+	// Store one canonical spelling so re-entering the step shows the same text.
+	canonical := tasks.FormatTimecode(r.Start) + "," + tasks.FormatTimecode(r.End)
+	return m.recordAndAdvance(step.ID, canonical)
 }
 
 // stepAdvance records the answer and moves to the next active step, which may be
@@ -255,30 +620,69 @@ func (m Model) stepAdvance() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m.enterOutput()
 	}
+	res := m.resolution()
 
 	switch step.Type {
 	case tasks.StepChoice:
-		shown := m.resolution().Shown[step.ID]
+		shown := res.Shown[step.ID]
 		if len(shown) == 0 {
 			m.notice, m.noticeIsError = "no option is available for this question", true
 			return m, nil
 		}
 		m.choiceIdx = clamp(m.choiceIdx, 0, len(shown)-1)
-		m.answers[step.ID] = shown[m.choiceIdx].Value
+		return m.recordAndAdvance(step.ID, shown[m.choiceIdx].Value)
 
-	case tasks.StepInput:
+	case tasks.StepMulti:
+		shown := res.Shown[step.ID]
+		picked := make([]string, 0, len(shown))
+		for _, c := range shown {
+			if m.toggles[c.Value] {
+				picked = append(picked, c.Value)
+			}
+		}
+		return m.recordAndAdvance(step.ID, strings.Join(picked, ","))
+
+	case tasks.StepConfirm:
+		if m.confirmYes {
+			return m.recordAndAdvance(step.ID, "yes")
+		}
+		return m.recordAndAdvance(step.ID, "no")
+
+	case tasks.StepResolution:
+		shown := res.Shown[step.ID]
+		if row := customRowIndex(step, shown); row >= 0 && m.choiceIdx == row {
+			value := strings.TrimSpace(m.customInput.Value())
+			if err := step.CheckAnswer(value); err != nil {
+				m.notice, m.noticeIsError = err.Error(), true
+				return m, nil
+			}
+			return m.recordAndAdvance(step.ID, value)
+		}
+		if len(shown) == 0 {
+			m.notice, m.noticeIsError = "no option is available for this question", true
+			return m, nil
+		}
+		m.choiceIdx = clamp(m.choiceIdx, 0, len(shown)-1)
+		return m.recordAndAdvance(step.ID, shown[m.choiceIdx].Value)
+
+	case tasks.StepTimeRange:
+		return m.rangeAdvance(step)
+
+	default:
 		value := strings.TrimSpace(m.stepInput.Value())
 		if err := step.CheckAnswer(value); err != nil {
 			m.notice, m.noticeIsError = err.Error(), true
 			return m, nil
 		}
-		m.answers[step.ID] = value
-
-	default:
-		// Unsupported type: keep whatever the engine resolved and move on, so
-		// the flow still reaches a command.
+		return m.recordAndAdvance(step.ID, value)
 	}
+}
 
+// recordAndAdvance stores an answer and moves on. It is the single place that
+// advances the cursor, so every step type lands on the same "what comes next"
+// logic.
+func (m Model) recordAndAdvance(stepID, value string) (tea.Model, tea.Cmd) {
+	m.answers[stepID] = value
 	m.notice, m.noticeIsError = "", false
 	m.stepIndex++
 
