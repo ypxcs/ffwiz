@@ -1,0 +1,21 @@
+# Binaries and build output
+/bin/
+/ffwiz
+/dist/
+*.test
+coverage.out
+
+# Local-only documentation.
+# README.md is the only markdown file that is tracked; everything else
+# (plan.md, DECISIONS.md, docs/TASKS.md, ...) stays local.
+*.md
+!README.md
+!**/README.md
+
+# Generated test media (regenerate with `make samples`)
+/internal/ffmpeg/testdata/media/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
