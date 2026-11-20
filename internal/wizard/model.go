@@ -11,6 +11,8 @@ import (
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -33,7 +35,32 @@ const (
 	ScreenOutput
 	// ScreenReview shows the finished command.
 	ScreenReview
+	// ScreenRun shows the encode in progress.
+	ScreenRun
+	// ScreenDone reports how the run ended.
+	ScreenDone
 )
+
+// Runner starts ffmpeg and hands back a handle to watch.
+//
+// It is a parameter rather than a direct call to ffmpeg.Start so that the model
+// tests can drive a whole run - progress, cancellation, failure - without
+// spawning a process (plan.md §3, rule 4).
+type Runner func(ctx context.Context, ffmpegPath string, cmd *ffmpeg.Command, opts ffmpeg.RunOptions) (RunHandle, error)
+
+// RunHandle is a running ffmpeg: a stream of events and a way to stop it.
+// *ffmpeg.Run satisfies it.
+type RunHandle interface {
+	// Events is closed after the final Done event.
+	Events() <-chan ffmpeg.Event
+	// Cancel stops the process, politely at first.
+	Cancel()
+}
+
+// startFFmpeg is the Runner used when a caller does not supply one.
+func startFFmpeg(ctx context.Context, ffmpegPath string, cmd *ffmpeg.Command, opts ffmpeg.RunOptions) (RunHandle, error) {
+	return ffmpeg.Start(ctx, ffmpegPath, cmd, opts)
+}
 
 // Deps is everything the wizard needs from outside. Nothing here reaches out to
 // the filesystem or the network on its own, which is what lets the model tests
@@ -55,6 +82,11 @@ type Deps struct {
 	// has none, and copying explains itself instead of failing silently
 	// (DECISIONS D16).
 	Clipboard Clipboard
+	// Run starts ffmpeg. Nil means use ffmpeg.Start.
+	Run Runner
+	// Reveal shows a file in the desktop's file manager, best effort. Nil means
+	// the platform default.
+	Reveal func(path string) error
 	// IsDark selects the colour scheme until the terminal says otherwise.
 	IsDark bool
 	// ProbeTimeout bounds the ffprobe run. Zero uses the package default.
@@ -105,9 +137,46 @@ type Model struct {
 
 	outputPath  string
 	outputInput textinput.Model
+	// overwrite is true only after the user has confirmed replacing an existing
+	// file on the output screen. It is what turns -n into -y, and it is never
+	// set on the user's behalf (plan.md §8).
+	overwrite bool
+	// conflict is the output screen's "that file already exists" sub-state, and
+	// conflictIdx is the option the cursor is on.
+	conflict    bool
+	conflictIdx int
 
 	copied bool
+
+	// The run screen. handle is nil until ffmpeg has been started; progress,
+	// logs and elapsed are what it has reported so far.
+	runner    Runner
+	reveal    func(path string) error
+	handle    RunHandle
+	starting  bool
+	progress  ffmpeg.Progress
+	elapsed   time.Duration
+	startedAt time.Time
+	logs      []string
+	showLog   bool
+	bar       progress.Model
+	spin      spinner.Model
+	// askingToStop is the "stop the encode?" confirmation (plan.md §6.7).
+	askingToStop bool
+
+	// The done screen.
+	result   ffmpeg.Result
+	outcome  ffmpeg.Outcome
+	hintText string
+	// removed records that the partial output was deleted after a cancel, so
+	// the screen does not offer to delete it twice.
+	removed bool
 }
+
+// maxLogLines bounds the log pane. ffmpeg's stderr is short with -nostats, but a
+// failing run can repeat a line for every frame, and an unbounded slice in a
+// long-lived model is a leak.
+const maxLogLines = 500
 
 // New builds the wizard in its starting state.
 func New(deps Deps) Model {
@@ -126,6 +195,8 @@ func New(deps Deps) Model {
 		caps:    deps.Caps,
 		tools:   deps.Tools,
 		clip:    clip,
+		runner:  deps.Run,
+		reveal:  deps.Reveal,
 		timeout: deps.ProbeTimeout,
 		answers: map[string]string{},
 		width:   80,
@@ -134,6 +205,12 @@ func New(deps Deps) Model {
 		input:   deps.Input,
 	}
 	m.help.Styles = help.DefaultStyles(deps.IsDark)
+	if m.runner == nil {
+		m.runner = startFFmpeg
+	}
+	if m.reveal == nil {
+		m.reveal = revealInFileManager
+	}
 
 	m.picker = filepicker.New()
 	m.picker.FileAllowed = true
@@ -157,6 +234,8 @@ func New(deps Deps) Model {
 
 	m.stepInput = textinput.New()
 	m.outputInput = textinput.New()
+	m.bar = progress.New(progress.WithWidth(40), progress.WithoutPercentage())
+	m.spin = spinner.New(spinner.WithSpinner(spinner.Dot))
 	m.applyStyles()
 
 	if deps.Input != "" {
@@ -272,10 +351,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice, m.noticeIsError = "command copied to the clipboard", false
 		}
 		return m, nil
+
+	case runStartedMsg:
+		return m.handleRunStarted(msg)
+
+	case runEventMsg:
+		return m.handleRunEvent(msg)
+
+	case revealMsg:
+		if msg.err != nil {
+			m.notice, m.noticeIsError = "could not open the folder: "+msg.err.Error(), true
+		} else {
+			m.notice, m.noticeIsError = "asked the file manager to show the file", false
+		}
+		return m, nil
+
+	case tickMsg:
+		return m.handleTick(msg)
+
+	case spinner.TickMsg:
+		// The spinner reschedules itself, so it is started once and stopped by
+		// no longer forwarding its command when the run is over.
+		if m.screen != ScreenRun {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	}
 
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {
+		// A run owns its keys. `q` and ctrl+c ask to stop rather than quit the
+		// wizard, because a half-written output file is not something to walk
+		// away from by accident (plan.md §6.7).
+		if m.screen == ScreenRun {
+			return m.updateRun(keyMsg)
+		}
 		if key.Matches(keyMsg, m.keys.Quit) && !m.textEntryFocused() {
 			return m, tea.Quit
 		}
@@ -297,6 +409,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateOutput(msg, keyMsg, isKey)
 	case ScreenReview:
 		return m.updateReview(keyMsg, isKey)
+	case ScreenDone:
+		return m.updateDone(msg, keyMsg, isKey)
 	}
 	return m, nil
 }
@@ -307,7 +421,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) textEntryFocused() bool {
 	switch m.screen {
 	case ScreenOutput:
-		return true
+		// The conflict prompt is a menu, not the name field: with it open, `q`
+		// must quit and `e` must not be swallowed by the input.
+		return !m.conflict
 	case ScreenStep:
 		step, ok := m.currentStep()
 		return ok && step.Type != tasks.StepChoice && step.Type != tasks.StepConfirm
@@ -344,6 +460,9 @@ func (m *Model) resize() {
 	m.stepInput.SetWidth(width - 4)
 	m.outputInput.SetWidth(width - 4)
 	m.help.SetWidth(m.width)
+	// The bar leaves room for the percentage that follows it and for the indent
+	// the run screen gives its content.
+	m.bar.SetWidth(clamp(width-20, 8, 60))
 }
 
 // bodyHeightFor is the height left for the main pane once the header, rules,
@@ -417,6 +536,10 @@ func (m Model) body(width int) string {
 		return m.stepBody(width)
 	case ScreenOutput:
 		return m.outputBody(width)
+	case ScreenRun:
+		return m.runBody(width)
+	case ScreenDone:
+		return m.doneBody(width)
 	default:
 		return m.reviewBody(width)
 	}
@@ -433,6 +556,10 @@ func (m Model) hint() string {
 		return m.hintStep()
 	case ScreenOutput:
 		return m.hintOutput()
+	case ScreenRun:
+		return m.hintRun()
+	case ScreenDone:
+		return m.hintDone()
 	default:
 		return m.hintReview()
 	}
@@ -448,12 +575,15 @@ func (m Model) header(width int) string {
 		{"Task", ScreenTask},
 		{"Options", ScreenStep},
 		{"Review", ScreenReview},
+		{"Run", ScreenRun},
 	}
 	parts := make([]string, 0, len(crumbs))
 	for _, c := range crumbs {
 		active := m.screen == c.screen ||
-			// The output screen is still part of the options phase.
-			(c.screen == ScreenStep && m.screen == ScreenOutput)
+			// The output screen is still part of the options phase, and the
+			// done screen is still part of the run.
+			(c.screen == ScreenStep && m.screen == ScreenOutput) ||
+			(c.screen == ScreenRun && m.screen == ScreenDone)
 		style := m.styles.Breadcrumb
 		if active {
 			style = m.styles.BreadcrumbOn
@@ -511,6 +641,15 @@ func (m Model) helpBindings() helpView {
 			},
 		}
 	case ScreenOutput:
+		if m.conflict {
+			return helpView{
+				short: []key.Binding{k.Up, k.Down, k.Select, k.Quit},
+				full: [][]key.Binding{
+					{k.Up, k.Down, k.Select},
+					{k.Back, k.Quit, k.Help},
+				},
+			}
+		}
 		return helpView{
 			short: []key.Binding{k.Select, k.Back, k.Quit},
 			full: [][]key.Binding{
@@ -518,13 +657,40 @@ func (m Model) helpBindings() helpView {
 				{k.Quit, k.Help},
 			},
 		}
-	default:
-		bindings := []key.Binding{k.Copy, k.Back, k.Quit}
+	case ScreenRun:
+		return helpView{
+			short: []key.Binding{k.Cancel, k.Log},
+			full: [][]key.Binding{
+				{k.Cancel, k.Log},
+				{k.Help},
+			},
+		}
+	case ScreenDone:
+		// Only the keys that lead somewhere are listed, matching what the screen
+		// offers: no `o` on a run that wrote nothing, no `d` without a partial
+		// file (DECISIONS D32).
+		bindings := []key.Binding{k.Back}
+		if m.outcome == ffmpeg.OutcomeCancelled && !m.removed && m.outputExists() {
+			bindings = append(bindings, k.Delete)
+		}
+		if m.canReveal() {
+			bindings = append(bindings, k.Reveal)
+		}
+		bindings = append(bindings, k.Quit)
 		return helpView{
 			short: bindings,
 			full: [][]key.Binding{
-				{k.Copy, k.Back},
-				{k.Quit, k.Help},
+				bindings,
+				{k.Help},
+			},
+		}
+	default:
+		bindings := []key.Binding{k.Run, k.Copy, k.Back, k.Quit}
+		return helpView{
+			short: bindings,
+			full: [][]key.Binding{
+				{k.Run, k.Copy},
+				{k.Back, k.Quit, k.Help},
 			},
 		}
 	}
@@ -533,8 +699,8 @@ func (m Model) helpBindings() helpView {
 // ── small helpers ───────────────────────────────────────────────────────────
 
 // buildOptions are the parts of an ffmpeg request that are not answers.
-func buildOptions(input, output string) tasks.BuildOptions {
-	return tasks.BuildOptions{Input: input, Output: output}
+func (m Model) buildOptions() tasks.BuildOptions {
+	return tasks.BuildOptions{Input: m.input, Output: m.outputPath, Overwrite: m.overwrite}
 }
 
 // row places two strings at the ends of a line of the given width.

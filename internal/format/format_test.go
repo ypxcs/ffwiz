@@ -60,3 +60,29 @@ func TestHumanDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestClock(t *testing.T) {
+	tests := []struct {
+		in   time.Duration
+		want string
+	}{
+		{0, "0:00"},
+		{-5 * time.Second, "0:00"},
+		{3 * time.Second, "0:03"},
+		{65 * time.Second, "1:05"},
+		{59*time.Minute + 59*time.Second, "59:59"},
+		{time.Hour, "1:00:00"},
+		{time.Hour + 2*time.Minute + 3*time.Second, "1:02:03"},
+		// Rounded to the nearest second: a clock that flickers between two
+		// values for one frame is worse than one that is half a second out.
+		{1499 * time.Millisecond, "0:01"},
+		{1600 * time.Millisecond, "0:02"},
+		{1400 * time.Millisecond, "0:01"},
+		{10*time.Hour + 5*time.Minute + 9*time.Second, "10:05:09"},
+	}
+	for _, tc := range tests {
+		if got := Clock(tc.in); got != tc.want {
+			t.Errorf("Clock(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

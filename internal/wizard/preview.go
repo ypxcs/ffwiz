@@ -35,10 +35,18 @@ func (m Model) commandPane(width int) string {
 	tokens = append(tokens, token{text: "ffmpeg", style: m.styles.Key})
 	for _, arg := range cmd.DisplayArgs() {
 		style := m.styles.Muted
+		text := arg
 		if isPlaceholder(arg) {
+			// A placeholder is a marker, not an argument: quoting it would make
+			// it look like a path that really exists.
 			style = m.styles.Placeholder
+		} else {
+			// Quoted exactly as the copied command quotes it. A path with a
+			// space in it must look the same here as it does in the clipboard,
+			// or the pane is showing a command that would not work.
+			text = ffmpeg.Quote(arg)
 		}
-		tokens = append(tokens, token{text: arg, style: style})
+		tokens = append(tokens, token{text: text, style: style})
 	}
 
 	lines := wrapTokens(tokens, width)
@@ -126,7 +134,7 @@ func (m Model) liveCommand() (*ffmpeg.Command, []string, error) {
 	if m.engine == nil || m.input == "" || m.width == 0 {
 		return nil, nil, nil
 	}
-	preview, _, err := m.engine.Preview(m.answers, buildOptions(m.input, m.outputPath))
+	preview, _, err := m.engine.Preview(m.answers, m.buildOptions())
 	if err != nil {
 		return nil, nil, err
 	}

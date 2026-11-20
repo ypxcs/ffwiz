@@ -204,7 +204,7 @@ func TestIntegrationRunAwkwardFilenames(t *testing.T) {
 
 // TestIntegrationRunUnixPasteableCommand runs the *displayed* command through
 // /bin/sh, which is what the user does when they paste the preview into a
-// terminal. This is the only test that exercises shellQuote.
+// terminal. This is the only test that exercises ffmpeg.Quote.
 func TestIntegrationRunUnixPasteableCommand(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("/bin/sh is not available")

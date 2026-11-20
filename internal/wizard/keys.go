@@ -17,6 +17,16 @@ type bindings struct {
 	ShowAll key.Binding
 	Copy    key.Binding
 	Run     key.Binding
+	// Cancel stops a running encode. It deliberately shares `q` and `ctrl+c`
+	// with Quit: those are the keys a user reaches for to stop something, and
+	// during a run they must ask rather than exit (plan.md §6.7).
+	Cancel key.Binding
+	// Log toggles the encoder log pane.
+	Log key.Binding
+	// Delete removes the partial output left behind by a cancelled run.
+	Delete key.Binding
+	// Reveal shows the output in the desktop's file manager.
+	Reveal key.Binding
 }
 
 // newBindings returns a fresh set. Bindings are keyed by name because the
@@ -65,7 +75,23 @@ func newBindings() bindings {
 		),
 		Run: key.NewBinding(
 			key.WithKeys("r"),
-			key.WithHelp("r", "run (M4)"),
+			key.WithHelp("r", "run"),
+		),
+		Cancel: key.NewBinding(
+			key.WithKeys("ctrl+c", "q"),
+			key.WithHelp("q", "stop"),
+		),
+		Log: key.NewBinding(
+			key.WithKeys("l"),
+			key.WithHelp("l", "log"),
+		),
+		Delete: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "delete partial file"),
+		),
+		Reveal: key.NewBinding(
+			key.WithKeys("o"),
+			key.WithHelp("o", "open folder"),
 		),
 	}
 }

@@ -240,3 +240,95 @@ func TestIntegrationCapabilitiesMatchRawListings(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegrationRunReportsRealProgress runs a real encode and reads the real
+// `-progress` stream. The parsing is unit-tested against recorded output; this
+// checks that the recording still matches what this ffmpeg actually writes, and
+// that the exit status is not the only thing telling success from failure
+// (plan.md §11, DECISIONS D9).
+func TestIntegrationRunReportsRealProgress(t *testing.T) {
+	tools := requireTools(t)
+	input := requireSample(t, "av.mp4")
+	output := filepath.Join(t.TempDir(), "out.mp4")
+
+	cmd, err := Build(Request{
+		Inputs:     []InputSpec{{Path: input}},
+		Output:     output,
+		OutputArgs: []string{"-c:v", "libx264", "-crf", "28", "-c:a", "copy"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	run, err := Start(context.Background(), tools.FFmpeg, cmd, RunOptions{Throttle: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var (
+		updates []Progress
+		logs    []string
+		result  Result
+	)
+	timeout := time.After(2 * time.Minute)
+	for done := false; !done; {
+		select {
+		case ev, ok := <-run.Events():
+			if !ok {
+				t.Fatal("the event stream closed without a Done event")
+			}
+			switch {
+			case ev.Done:
+				result, done = ev.Result, true
+			case ev.Progress != nil:
+				updates = append(updates, *ev.Progress)
+			default:
+				logs = append(logs, ev.Log)
+			}
+		case <-timeout:
+			t.Fatal("the encode never finished")
+		}
+	}
+
+	if result.Err != nil {
+		t.Fatalf("the encode failed: %v\n%s", result.Err, strings.Join(result.Stderr, "\n"))
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
+	}
+	if len(updates) == 0 {
+		t.Fatal("no progress was reported")
+	}
+	final := updates[len(updates)-1]
+	if !final.Ended {
+		t.Errorf("the last update is not the end of the encode: %+v", final)
+	}
+	if final.OutTime <= 0 || final.OutTime > 3*time.Second {
+		t.Errorf("OutTime = %v, which is not the length of the 2s sample", final.OutTime)
+	}
+	if final.TotalSize <= 0 {
+		t.Errorf("TotalSize = %d, want the bytes written", final.TotalSize)
+	}
+	if final.Speed <= 0 {
+		t.Errorf("Speed = %v, want a real speed", final.Speed)
+	}
+	if len(logs) == 0 {
+		t.Error("ffmpeg's own output produced no log lines")
+	}
+
+	if outcome, hint := Diagnose(result, output); outcome != OutcomeSucceeded {
+		t.Fatalf("Diagnose = %v (%s), want succeeded", outcome, hint)
+	}
+	if info, err := os.Stat(output); err != nil || info.Size() == 0 {
+		t.Fatalf("the output file is missing or empty: %v", err)
+	}
+
+	// The output has to be a real file, not just bytes on disk (§11).
+	info, err := Probe(context.Background(), tools.FFprobe, output)
+	if err != nil {
+		t.Fatalf("probing the output: %v", err)
+	}
+	if !info.Has(StreamVideo) {
+		t.Error("the output has no video stream")
+	}
+}

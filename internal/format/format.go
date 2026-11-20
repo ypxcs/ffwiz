@@ -27,6 +27,23 @@ func Duration(d time.Duration) string {
 	return rounded.String()
 }
 
+// Clock formats an elapsed or remaining time as M:SS, or H:MM:SS past an hour.
+//
+// It differs from Duration on purpose: a clock reading is a position on a
+// timeline, where 0:00 is a real value rather than a missing one, and where
+// sub-second precision is noise that makes the display jitter.
+func Clock(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Round(time.Second).Seconds())
+	hours, minutes, seconds := total/3600, (total%3600)/60, total%60
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%d:%02d", minutes, seconds)
+}
+
 // Bytes formats a byte count for display. Sizes use binary units and are
 // labelled as such (KiB, not KB), because that is how file managers report them
 // and a mismatch between the two is confusing.

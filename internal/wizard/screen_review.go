@@ -50,10 +50,18 @@ func (m Model) reviewBody(width int) string {
 	if len(pending) > 0 {
 		b.WriteString("\n" + m.styles.Warning.Render(
 			"still unanswered: "+strings.Join(pending, ", ")) + "\n")
-	} else if m.copied {
+	}
+
+	switch {
+	case m.overwrite:
+		// Replacing a file is the one irreversible thing the wizard can do, so
+		// the screen that offers the Run action says so plainly (plan.md §8).
+		b.WriteString("\n" + m.styles.Warning.Render(
+			"the existing file will be replaced if you run this") + "\n")
+	case m.copied:
 		b.WriteString("\n" + m.styles.OK.Render("copied to the clipboard") + "\n")
-	} else {
-		b.WriteString("\n" + m.styles.Muted.Render("press c to copy the command") + "\n")
+	default:
+		b.WriteString("\n" + m.styles.Muted.Render("press r to run it, or c to copy the command") + "\n")
 	}
 
 	if cmd == nil {
@@ -107,19 +115,21 @@ func (m Model) hintReview() string {
 	if len(pending) > 0 {
 		return "some answers are missing; go back and fill them in"
 	}
-	return "copy the command and paste it into a terminal, or press esc to change an answer"
+	return "press r to run it, c to copy it into a terminal, or esc to change an answer"
 }
 
 // updateReview handles the review screen's actions.
 //
-// M3 stops here: the command is produced and can be copied. Running it, editing
-// it and saving it as a script are the run screen (M4) and the polish pass (M6),
-// and the help line says so rather than pretending otherwise.
+// Plan.md §6.6 lists Edit command and Save as script as well; both are M6 work,
+// and the help line says what is actually offered rather than listing actions
+// that do nothing.
 func (m Model) updateReview(keyMsg tea.KeyPressMsg, isKey bool) (tea.Model, tea.Cmd) {
 	if !isKey {
 		return m, nil
 	}
 	switch {
+	case key.Matches(keyMsg, m.keys.Run):
+		return m.startRun()
 	case key.Matches(keyMsg, m.keys.Copy):
 		return m.copyCommand()
 	case key.Matches(keyMsg, m.keys.Back):

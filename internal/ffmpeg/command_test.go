@@ -243,8 +243,8 @@ func TestShellQuote(t *testing.T) {
 		{"has\nnewline", "'has\nnewline'"},
 	}
 	for _, tc := range tests {
-		if got := shellQuote(tc.in); got != tc.want {
-			t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := Quote(tc.in); got != tc.want {
+			t.Errorf("Quote(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

@@ -132,7 +132,7 @@ func (c *Command) String() string {
 	parts := append([]string{"ffmpeg"}, c.DisplayArgs()...)
 	quoted := make([]string, len(parts))
 	for i, p := range parts {
-		quoted[i] = shellQuote(p)
+		quoted[i] = Quote(p)
 	}
 	return strings.Join(quoted, " ")
 }
@@ -236,10 +236,15 @@ func joinGraphs(graphs []string) string {
 // from being mangled by a shell running in a different locale.
 var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
-// shellQuote quotes an argument so the rendered command can be pasted into a
+// Quote quotes a single argument so a rendered command can be pasted into a
 // shell. Values that are already unambiguous are left alone to keep the preview
 // readable.
-func shellQuote(s string) string {
+//
+// It is exported because the wizard renders the command token by token, and a
+// pane that quoted differently from String would show one command while the
+// clipboard, the script export and the Run action produced another. The preview
+// is the contract (DECISIONS D27), so there is one quoting rule, here.
+func Quote(s string) string {
 	if s == "" {
 		return "''"
 	}
