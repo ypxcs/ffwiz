@@ -1,0 +1,134 @@
+# The first built-in task, and the reference example for the schema in plan.md
+# §4. Adding a task should mean adding a file like this and nothing else.
+#
+# Argument placement: every args/output_args entry here is an *output* option and
+# is therefore emitted after -i (see DECISIONS D19). input_args is for genuine
+# input options only.
+- id: convert_video
+  label: Convert video to another format
+  description: Change the container and/or the codec, for example MKV to MP4.
+  requires: { video: true }
+  steps:
+    - id: container
+      prompt: Output format
+      hint: MP4 plays almost everywhere. MKV is flexible. WebM suits the web.
+      type: choice
+      choices:
+        - label: MP4
+          hint: The safest choice. Plays on phones, TVs and browsers.
+          value: mp4
+          output_ext: mp4
+          requires_muxer: mp4
+          default: true
+        - label: MKV
+          hint: Matroska. Very flexible, but some devices cannot play it.
+          value: mkv
+          output_ext: mkv
+          requires_muxer: matroska
+        - label: WebM
+          hint: For the web. Only supports VP8/VP9/AV1 video with Vorbis/Opus audio.
+          value: webm
+          output_ext: webm
+          requires_muxer: webm
+
+    # A codec is only valid in some containers, which is what the choice-level
+    # `when` is for: ffmpeg refuses to mux H.264 into WebM, and a command that
+    # fails at run time is exactly what ffwiz exists to prevent.
+    #
+    # VP9 has no condition because all three containers accept it; it becomes
+    # the WebM default simply by being the first remaining choice there.
+    - id: vcodec
+      prompt: Video codec
+      hint: Re-encoding takes time and loses a little quality. Copy is instant.
+      type: choice
+      choices:
+        - label: H.264 (most compatible)
+          hint: Plays on nearly every device. The usual answer.
+          value: h264
+          args: ["-c:v", "libx264"]
+          requires_encoder: libx264
+          when: { answer_not: { container: webm } }
+          default: true
+        - label: H.265 / HEVC (smaller files)
+          hint: 30-50% smaller than H.264, but not every device can play it.
+          value: h265
+          args: ["-c:v", "libx265"]
+          requires_encoder: libx265
+          when: { answer_not: { container: webm } }
+        - label: VP9 (small files, slow to encode)
+          hint: Well supported on the web and in MKV.
+          value: vp9
+          args: ["-c:v", "libvpx-vp9"]
+          requires_encoder: libvpx-vp9
+        - label: Copy (no re-encode, instant)
+          hint: Keeps the original quality and is very fast, but only works if the
+            target container supports the current codec.
+          value: copy
+          args: ["-c:v", "copy"]
+          # Copying H.264 into WebM is rejected by ffmpeg, and whether a copy is
+          # legal depends on the input's codec, which the task engine cannot see
+          # from a static definition. WebM is therefore the one container where
+          # copy is not offered; a probe-aware check arrives with the rest of the
+          # catalogue (DECISIONS D21).
+          when: { answer_not: { container: webm } }
+          skips: [quality_h264, quality_h265, quality_vp9]
+
+    - id: quality_h264
+      prompt: Quality
+      hint: Higher quality means a bigger file. CRF is a constant-quality scale.
+      type: choice
+      when: { answer_is: { vcodec: h264 } }
+      choices:
+        - { label: "High (large file)", value: high, args: ["-crf", "18"] }
+        - { label: "Balanced (recommended)", value: balanced, args: ["-crf", "23"], default: true }
+        - { label: "Small file", value: small, args: ["-crf", "28"] }
+
+    - id: quality_h265
+      prompt: Quality
+      hint: H.265 keeps the same quality at a lower CRF value than H.264.
+      type: choice
+      when: { answer_is: { vcodec: h265 } }
+      choices:
+        - { label: "High (large file)", value: high, args: ["-crf", "20"] }
+        - { label: "Balanced (recommended)", value: balanced, args: ["-crf", "28"], default: true }
+        - { label: "Small file", value: small, args: ["-crf", "32"] }
+
+    - id: quality_vp9
+      prompt: Quality
+      hint: "VP9 needs -b:v 0 for constant quality; without it CRF is ignored."
+      type: choice
+      when: { answer_is: { vcodec: vp9 } }
+      choices:
+        - { label: "High (large file)", value: high, args: ["-b:v", "0", "-crf", "24"] }
+        - { label: "Balanced (recommended)", value: balanced, args: ["-b:v", "0", "-crf", "32"], default: true }
+        - { label: "Small file", value: small, args: ["-b:v", "0", "-crf", "40"] }
+
+    - id: audio
+      prompt: Audio
+      hint: Copying audio is lossless and instant when the target allows it.
+      type: choice
+      when: { input_has: audio }
+      choices:
+        - label: Keep as is (no re-encode)
+          hint: Instant and lossless, as long as the target container allows it.
+          value: copy
+          args: ["-c:a", "copy"]
+          when: { answer_not: { container: webm } }
+          default: true
+        - label: Re-encode to AAC
+          hint: The most widely supported audio codec.
+          value: aac
+          args: ["-c:a", "aac", "-b:a", "192k"]
+          requires_encoder: aac
+          when: { answer_not: { container: webm } }
+        - label: Re-encode to Opus
+          hint: Best quality per bitrate, and required for WebM.
+          value: opus
+          args: ["-c:a", "libopus", "-b:a", "128k"]
+          requires_encoder: libopus
+          when: { answer_is: { container: webm } }
+          default: true
+        - label: Remove audio
+          hint: Produces a silent video file.
+          value: none
+          args: ["-an"]

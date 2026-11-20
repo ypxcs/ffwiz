@@ -1,10 +1,9 @@
 // Command ffwiz is a TUI wizard that helps people with little or no ffmpeg
 // knowledge build a correct ffmpeg command.
 //
-// M1 SCOPE: this entry point only proves the plumbing end to end - it locates
-// the binaries, reports a clear error when they are missing, and shows the
-// probe summary for an input file. The wizard screens arrive in M3, at which
-// point this file keeps only the flag parsing and startup checks.
+// M2 SCOPE: the flag parsing, startup checks and the debug command from
+// plan.md §10. The wizard screens arrive in M3, at which point the smoke screen
+// below is deleted and this file keeps only startup.
 package main
 
 import (
@@ -19,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
+	"github.com/ypxcs/ffwiz/internal/tasks"
 )
 
 func main() {
@@ -32,9 +32,23 @@ func run() error {
 	var (
 		ffmpegFlag  = flag.String("ffmpeg", "", "path to the ffmpeg binary (default: $FFWIZ_FFMPEG, then PATH)")
 		ffprobeFlag = flag.String("ffprobe", "", "path to the ffprobe binary (default: $FFWIZ_FFPROBE, then PATH)")
+		configDir   = flag.String("config-dir", "", "directory holding user task overrides (default: ~/.config/ffwiz)")
 		showVersion = flag.Bool("version", false, "print the ffmpeg version ffwiz will use, then exit")
 		debug       = flag.Bool("debug", false, "write a debug log to the user cache directory")
+
+		dumpTask  = flag.String("dump", "", "print the ffmpeg command a task produces, without starting the UI")
+		listTasks = flag.Bool("list", false, "list the available tasks, then exit")
+		inputFlag = flag.String("input", "", "input file (with --dump)")
+		outputArg = flag.String("output", "", "output file (with --dump; default: derived from the input)")
+		overwrite = flag.Bool("overwrite", false, "use -y instead of -n in the dumped command")
+		noCaps    = flag.Bool("ignore-capabilities", false, "do not hide options this ffmpeg build cannot produce")
+		jsonOut   = flag.Bool("json", false, "print the dump as JSON")
 	)
+	var answerFlags []string
+	flag.Func("answers", "comma-separated step=value answers, repeatable; values may not contain commas (with --dump)", func(v string) error {
+		answerFlags = append(answerFlags, v)
+		return nil
+	})
 	flag.Parse()
 
 	// The TUI owns stdout and stderr, so a debug log file is the only way to
@@ -67,6 +81,34 @@ func run() error {
 		}
 		fmt.Printf("ffmpeg %s\n  %s\n  %s\n", version, tools.FFmpeg, tools.FFprobe)
 		return nil
+	}
+
+	// Loading validates every built-in definition, so a malformed YAML file
+	// fails here with the file and task rather than at some later screen
+	// (plan.md §4.7).
+	set, err := tasks.Load(tasks.LoadOptions{UserDir: *configDir})
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case *listTasks:
+		runList(os.Stdout, set, nil)
+		return nil
+	case *dumpTask != "":
+		answers, err := parseAnswers(answerFlags)
+		if err != nil {
+			return err
+		}
+		return runDump(os.Stdout, tools, set, dumpFlags{
+			TaskID:             *dumpTask,
+			Answers:            answers,
+			Input:              *inputFlag,
+			Output:             *outputArg,
+			Overwrite:          *overwrite,
+			IgnoreCapabilities: *noCaps,
+			JSON:               *jsonOut,
+		})
 	}
 
 	model := newSmokeModel(tools, flag.Arg(0))
