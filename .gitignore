@@ -12,8 +12,8 @@ coverage.out
 !README.md
 !**/README.md
 
-# Generated test media (regenerate with `make samples`)
-/internal/ffmpeg/testdata/media/
+# Generated test inputs (regenerate with `make samples`)
+/internal/ffmpeg/testdata/generated/
 
 # Editor / OS noise
 .DS_Store
