@@ -1,9 +1,9 @@
 // Command ffwiz is a TUI wizard that helps people with little or no ffmpeg
 // knowledge build a correct ffmpeg command.
 //
-// M2 SCOPE: the flag parsing, startup checks and the debug command from
-// plan.md §10. The wizard screens arrive in M3, at which point the smoke screen
-// below is deleted and this file keeps only startup.
+// This file is startup only: flags, the checks that must happen before a
+// terminal is taken over, and the two headless debug commands from plan.md §10.
+// Everything interactive lives in internal/wizard.
 package main
 
 import (
@@ -11,14 +11,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
 	"github.com/ypxcs/ffwiz/internal/tasks"
+	"github.com/ypxcs/ffwiz/internal/wizard"
 )
 
 func main() {
@@ -38,7 +37,7 @@ func run() error {
 
 		dumpTask  = flag.String("dump", "", "print the ffmpeg command a task produces, without starting the UI")
 		listTasks = flag.Bool("list", false, "list the available tasks, then exit")
-		inputFlag = flag.String("input", "", "input file (with --dump)")
+		inputFlag = flag.String("input", "", "input file; skips the file picker")
 		outputArg = flag.String("output", "", "output file (with --dump; default: derived from the input)")
 		overwrite = flag.Bool("overwrite", false, "use -y instead of -n in the dumped command")
 		noCaps    = flag.Bool("ignore-capabilities", false, "do not hide options this ffmpeg build cannot produce")
@@ -51,19 +50,24 @@ func run() error {
 	})
 	flag.Parse()
 
-	// The TUI owns stdout and stderr, so a debug log file is the only way to
-	// see what startup did (DECISIONS D11).
-	if *debug {
-		// The log itself lands in M3 alongside the wizard; for now report where
-		// it would go so the flag is not a silent no-op.
-		dir, err := os.UserCacheDir()
-		if err != nil {
-			dir = os.TempDir()
-		}
-		fmt.Fprintf(os.Stderr, "ffwiz: debug logging to %s\n", dir)
+	// The TUI owns stdout and stderr, so a log file is the only way to see what
+	// startup did (DECISIONS D11).
+	logger, closeLog, logErr := openDebugLog(*debug)
+	if closeLog != nil {
+		defer closeLog.Close()
 	}
+	if *debug && logErr != nil {
+		fmt.Fprintf(os.Stderr, "ffwiz: cannot write the debug log: %v\n", logErr)
+	}
+	logf := func(format string, args ...any) {
+		if logger != nil {
+			logger.Printf(format, args...)
+		}
+	}
+	logf("ffwiz starting: args=%q", os.Args)
 
-	tools, err := ffmpeg.Locate(context.Background(), ffmpeg.Overrides{
+	ctx := context.Background()
+	tools, err := ffmpeg.Locate(ctx, ffmpeg.Overrides{
 		FFmpeg:  *ffmpegFlag,
 		FFprobe: *ffprobeFlag,
 	})
@@ -73,6 +77,7 @@ func run() error {
 		// (plan.md §6.1).
 		return fmt.Errorf("%w\n\n%s", err, ffmpeg.InstallHint())
 	}
+	logf("ffmpeg %q at %s; ffprobe at %s", tools.Version, tools.FFmpeg, tools.FFprobe)
 
 	if *showVersion {
 		version := tools.Version
@@ -90,6 +95,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	logf("loaded %d tasks: %v", len(set.Tasks), set.IDs())
 
 	switch {
 	case *listTasks:
@@ -111,175 +117,46 @@ func run() error {
 		})
 	}
 
-	model := newSmokeModel(tools, flag.Arg(0))
-	if _, err := tea.NewProgram(model).Run(); err != nil {
+	// Capability detection happens before the alternate screen opens, so the
+	// first frame already hides what this build cannot produce instead of
+	// offering options that flicker away (DECISIONS D23).
+	caps, err := tools.Capabilities(ctx)
+	if err != nil {
+		logf("capability detection failed (%v); offering every option", err)
+		caps = ffmpeg.Capabilities{}
+	}
+	logf("capabilities: %d encoders, %d muxers, %d filters",
+		len(caps.Encoders), len(caps.Muxers), len(caps.Filters))
+
+	input := *inputFlag
+	if input == "" {
+		input = flag.Arg(0)
+	}
+
+	startDir, err := os.Getwd()
+	if err != nil {
+		// A working directory that cannot be read is not fatal: the picker
+		// falls back to the home directory rather than refusing to start.
+		logf("cannot read the working directory: %v", err)
+		startDir, _ = os.UserHomeDir()
+	}
+
+	model := wizard.New(wizard.Deps{
+		Set:          set,
+		Caps:         &caps,
+		Tools:        tools,
+		Input:        input,
+		StartDir:     startDir,
+		Clipboard:    wizard.NewSystemClipboard(),
+		ProbeTimeout: 30 * time.Second,
+	})
+	program := tea.NewProgram(model)
+	final, err := program.Run()
+	if err != nil {
+		logf("the wizard exited with an error: %v", err)
 		return err
 	}
+	_ = final
+	logf("the wizard exited")
 	return nil
-}
-
-// smokeModel is a throwaway screen from M1. It is replaced by the wizard in M3.
-type smokeModel struct {
-	tools  ffmpeg.Tools
-	input  string
-	info   *ffmpeg.MediaInfo
-	err    error
-	width  int
-	height int
-}
-
-// probeDoneMsg carries the result of an off-thread ffprobe run back to Update.
-type probeDoneMsg struct {
-	info *ffmpeg.MediaInfo
-	err  error
-}
-
-func newSmokeModel(tools ffmpeg.Tools, input string) smokeModel {
-	return smokeModel{tools: tools, input: input}
-}
-
-// Init starts any required I/O. Probing happens here rather than in Update so
-// the UI never blocks (plan.md §3, rule 4).
-func (m smokeModel) Init() tea.Cmd {
-	if m.input == "" {
-		return nil
-	}
-	// A closure returning a Msg is the idiomatic tea.Cmd.
-	return func() tea.Msg {
-		info, err := ffmpeg.Probe(context.Background(), m.tools.FFprobe, m.input)
-		return probeDoneMsg{info: info, err: err}
-	}
-}
-
-func (m smokeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-	case probeDoneMsg:
-		m.info, m.err = msg.info, msg.err
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			return m, tea.Quit
-		}
-	}
-	return m, nil
-}
-
-func (m smokeModel) View() tea.View {
-	var b strings.Builder
-
-	title := lipgloss.NewStyle().Bold(true)
-	dim := lipgloss.NewStyle().Faint(true)
-
-	b.WriteString(title.Render("ffwiz") + dim.Render(" — M1 smoke screen") + "\n\n")
-	fmt.Fprintf(&b, "  ffmpeg   %s\n", orUnknown(m.tools.Version))
-	fmt.Fprintf(&b, "  binary   %s\n", m.tools.FFmpeg)
-	fmt.Fprintf(&b, "  ffprobe  %s\n\n", m.tools.FFprobe)
-
-	switch {
-	case m.input == "":
-		fmt.Fprintf(&b, "  %s\n", dim.Render("Pass a media file to see its details:  ffwiz some-video.mp4"))
-	case m.err != nil:
-		b.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("probe failed") + "\n")
-		fmt.Fprintf(&b, "  %v\n", m.err)
-	case m.info == nil:
-		// View runs before the probe command returns, so the model must have a
-		// defined loading state. Rendering the result unconditionally here was a
-		// nil dereference in the M1 build.
-		b.WriteString("  " + dim.Render("probing "+m.input+" …") + "\n")
-	default:
-		b.WriteString(summarize(m.info))
-	}
-
-	b.WriteString("\n" + dim.Render("  q quit"))
-	v := tea.NewView(b.String())
-	v.AltScreen = true
-	return v
-}
-
-func orUnknown(s string) string {
-	if s == "" {
-		return "(unknown)"
-	}
-	return s
-}
-
-// summarize renders the probe result as plain lines. A nil or empty result
-// renders nothing rather than panicking, so a partial probe cannot crash View.
-func summarize(info *ffmpeg.MediaInfo) string {
-	if info == nil {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "  container  %s\n", info.Format.Name)
-	fmt.Fprintf(&b, "  duration   %s\n", roundDuration(info.Duration()))
-	fmt.Fprintf(&b, "  size       %s\n", humanBytes(info.Format.Size))
-	if info.Format.BitRate > 0 {
-		fmt.Fprintf(&b, "  bitrate    %s\n", humanBitRate(info.Format.BitRate))
-	}
-	b.WriteString("\n")
-	for _, s := range info.Streams {
-		switch s.Type {
-		case ffmpeg.StreamVideo:
-			fmt.Fprintf(&b, "  video #%d   %s %dx%d %s %.3g fps\n",
-				s.Index, s.CodecName, s.Width, s.Height, s.PixelFormat, s.FrameRate)
-		case ffmpeg.StreamAudio:
-			fmt.Fprintf(&b, "  audio #%d   %s %s %d Hz\n",
-				s.Index, s.CodecName, or(s.ChannelLayout, fmt.Sprintf("%dch", s.Channels)), s.SampleRate)
-		case ffmpeg.StreamSubtitle:
-			fmt.Fprintf(&b, "  subs  #%d   %s %s\n", s.Index, s.CodecName, s.Language)
-		default:
-			fmt.Fprintf(&b, "  other #%d   %s\n", s.Index, s.CodecName)
-		}
-	}
-	return b.String()
-}
-
-func or(a, b string) string {
-	if a == "" {
-		return b
-	}
-	return a
-}
-
-// roundDuration formats a media duration for display, truncating below the
-// millisecond because anything finer is noise for media and truncating is
-// honest (a 1.9999s clip must not read as 2s).
-func roundDuration(d time.Duration) string {
-	if d <= 0 {
-		return "unknown"
-	}
-	rounded := d.Truncate(time.Millisecond)
-	if rounded == 0 {
-		return "<1ms"
-	}
-	return rounded.String()
-}
-
-func humanBytes(n int64) string {
-	if n <= 0 {
-		return "unknown"
-	}
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for n/div >= unit && exp < 3 {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMG"[exp])
-}
-
-func humanBitRate(bps int64) string {
-	switch {
-	case bps >= 1_000_000:
-		return fmt.Sprintf("%.1f Mbit/s", float64(bps)/1_000_000)
-	case bps >= 1_000:
-		return fmt.Sprintf("%.0f kbit/s", float64(bps)/1_000)
-	default:
-		return fmt.Sprintf("%d bit/s", bps)
-	}
 }
