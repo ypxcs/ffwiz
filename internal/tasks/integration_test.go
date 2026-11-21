@@ -241,6 +241,268 @@ func TestIntegrationRunUnixPasteableCommand(t *testing.T) {
 	}
 }
 
+// TestIntegrationRunCatalogueTasks runs the tasks plan.md §5 asks for against
+// the real ffmpeg and checks what came out, rather than trusting the exit
+// status. Each case names the output extension (or sequence pattern) so the test
+// knows what the command was supposed to write.
+func TestIntegrationRunCatalogueTasks(t *testing.T) {
+	tools := requireTools(t)
+	set := loadBuiltin(t)
+	caps, err := tools.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		task    string
+		answers map[string]string
+		input   string
+		// out is appended to "out", so "mp3" writes out.mp3 and
+		// "%04d.png" writes out.%04d.png.
+		out string
+		// wantFiles is how many files the run should leave behind; 0 means
+		// "at least one, however many the run decides".
+		wantFiles int
+		// check is run on the probed output of an ordinary file.
+		check func(t *testing.T, got *ffmpeg.MediaInfo)
+	}{
+		{
+			name:  "compress: the default CRF encode",
+			task:  "compress_video",
+			input: "av.mp4",
+			out:   "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "h264")
+				wantStream(t, got, ffmpeg.StreamAudio, "aac")
+			},
+		},
+		{
+			name:    "compress: a target size is not exceeded",
+			task:    "compress_video",
+			answers: map[string]string{"method": "size", "size": "10"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "h264")
+				// The bitrate is worked out from the target, so the file can
+				// come in under it but must not overshoot it (DECISIONS D8).
+				if got.Format.Size > 10*1024*1024 {
+					t.Errorf("the output is %d bytes, over the 10 MiB target", got.Format.Size)
+				}
+			},
+		},
+		{
+			name:  "extract audio: MP3",
+			task:  "extract_audio",
+			input: "av.mp4",
+			out:   "mp3",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamAudio, "mp3")
+				noStream(t, got, ffmpeg.StreamVideo)
+			},
+		},
+		{
+			name:    "extract audio: FLAC",
+			task:    "extract_audio",
+			answers: map[string]string{"format": "flac"},
+			input:   "av.mp4",
+			out:     "flac",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamAudio, "flac")
+			},
+		},
+		{
+			name:    "extract audio: WAV",
+			task:    "extract_audio",
+			answers: map[string]string{"format": "wav"},
+			input:   "av.mp4",
+			out:     "wav",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamAudio, "pcm_s16le")
+			},
+		},
+		{
+			name:    "extract audio: M4A",
+			task:    "extract_audio",
+			answers: map[string]string{"format": "m4a", "bitrate": "128"},
+			input:   "av.mp4",
+			out:     "m4a",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamAudio, "aac")
+				noStream(t, got, ffmpeg.StreamVideo)
+			},
+		},
+		{
+			name:    "trim: fast copy",
+			task:    "trim",
+			answers: map[string]string{"range": "00:00:00.500,00:00:01.500", "mode": "fast"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				// The fast branch starts on a keyframe, so the clip can be a
+				// little long rather than exactly one second (plan.md §5.4).
+				wantDurationNear(t, got, time.Second, 600*time.Millisecond)
+			},
+		},
+		{
+			name:    "trim: accurate",
+			task:    "trim",
+			answers: map[string]string{"range": "00:00:00.500,00:00:01.500"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantDurationNear(t, got, time.Second, 200*time.Millisecond)
+			},
+		},
+		{
+			name:    "resize: 480p keeps the aspect ratio and an even width",
+			task:    "resize",
+			answers: map[string]string{"height": "480"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				v, ok := got.FirstStream(ffmpeg.StreamVideo)
+				if !ok {
+					t.Fatal("the output has no video stream")
+				}
+				if v.Height != 480 {
+					t.Errorf("height = %d, want 480", v.Height)
+				}
+				if v.Width%2 != 0 {
+					t.Errorf("width = %d, want an even number", v.Width)
+				}
+				if v.Width != 640 {
+					t.Errorf("width = %d, want 640 for a 4:3 input", v.Width)
+				}
+			},
+		},
+		{
+			name:    "speed: twice as fast halves the length",
+			task:    "change_speed",
+			answers: map[string]string{"speed": "2"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantDurationNear(t, got, time.Second, 300*time.Millisecond)
+			},
+		},
+		{
+			name:    "speed: half as fast doubles the length, sound intact",
+			task:    "change_speed",
+			answers: map[string]string{"speed": "0.5"},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantDurationNear(t, got, 4*time.Second, 400*time.Millisecond)
+				wantStream(t, got, ffmpeg.StreamAudio, "aac")
+			},
+		},
+		{
+			name:  "strip metadata: copying the streams",
+			task:  "strip_metadata",
+			input: "av.mp4",
+			out:   "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "h264")
+				if title := got.Format.Tags["title"]; title != "" {
+					t.Errorf("the output still has a title tag: %q", title)
+				}
+			},
+		},
+		{
+			name:  "frames: one thumbnail",
+			task:  "extract_frames",
+			input: "av.mp4",
+			out:   "png",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "png")
+			},
+		},
+		{
+			name:      "frames: a sequence every second",
+			task:      "extract_frames",
+			answers:   map[string]string{"mode": "every", "every": "1"},
+			input:     "av.mp4",
+			out:       "%04d.png",
+			wantFiles: 2, // the sample is two seconds long
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := requireSample(t, tc.input)
+			info, err := ffmpeg.Probe(context.Background(), tools.FFprobe, input)
+			if err != nil {
+				t.Fatalf("probing %s: %v", input, err)
+			}
+
+			output := filepath.Join(t.TempDir(), "out."+tc.out)
+			task, ok := set.Get(tc.task)
+			if !ok {
+				t.Fatalf("%s is not in the catalogue", tc.task)
+			}
+			eng := &Engine{Task: task, Info: info, Caps: &caps}
+			cmd, _, err := eng.Build(tc.answers, tasksBuildOptions(input, output))
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			runFFmpeg(t, tools.FFmpeg, cmd.Args())
+
+			files := ffmpeg.OutputFiles(output)
+			if len(files) == 0 {
+				t.Fatalf("the command wrote nothing at %s", output)
+			}
+			if tc.wantFiles > 0 && len(files) != tc.wantFiles {
+				t.Errorf("the run left %d files, want %d: %v", len(files), tc.wantFiles, files)
+			}
+			if tc.check == nil {
+				return
+			}
+			got, err := ffmpeg.Probe(context.Background(), tools.FFprobe, files[0])
+			if err != nil {
+				t.Fatalf("probing the output: %v", err)
+			}
+			tc.check(t, got)
+		})
+	}
+}
+
+// wantStream asserts the output has a stream of the given kind and codec.
+func wantStream(t *testing.T, got *ffmpeg.MediaInfo, kind ffmpeg.StreamType, codec string) {
+	t.Helper()
+	s, ok := got.FirstStream(kind)
+	if !ok {
+		t.Errorf("the output has no %s stream, want %s", kind, codec)
+		return
+	}
+	if s.CodecName != codec {
+		t.Errorf("%s codec = %q, want %q", kind, s.CodecName, codec)
+	}
+}
+
+func noStream(t *testing.T, got *ffmpeg.MediaInfo, kind ffmpeg.StreamType) {
+	t.Helper()
+	if s, ok := got.FirstStream(kind); ok {
+		t.Errorf("the output has a %s stream (%s), want none", kind, s.CodecName)
+	}
+}
+
+// wantDurationNear asserts the output lasts about as long as expected. The
+// tolerance is generous: frame boundaries and stream copy make an exact match
+// meaningless.
+func wantDurationNear(t *testing.T, got *ffmpeg.MediaInfo, want, tolerance time.Duration) {
+	t.Helper()
+	delta := got.Duration() - want
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > tolerance {
+		t.Errorf("duration = %s, want %s within %s", got.Duration(), want, tolerance)
+	}
+}
+
 // tasksBuildOptions is BuildOptions for the integration tests: the output path is
 // always explicit so the test knows where to look.
 func tasksBuildOptions(input, output string) BuildOptions {

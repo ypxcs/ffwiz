@@ -200,21 +200,18 @@ func (c *Command) commonArgs() []string {
 //
 // plan.md §4.6 requires exactly one -vf and one -af no matter how many steps
 // contribute filters, so the chains are comma-joined here rather than emitted
-// as repeated flags. Exact duplicates are dropped; order is the caller's, which
-// is what makes the merge deterministic.
+// as repeated flags. Order is the caller's, which is what makes the merge
+// deterministic.
+//
+// Repeats are kept, not deduplicated: an atempo chain is necessarily the same
+// filter written twice (0.25x is atempo=0.5,atempo=0.5), so dropping "exact
+// duplicates" would silently produce a clip at the wrong speed.
 func mergeFilters(chain []string) string {
-	seen := make(map[string]struct{}, len(chain))
 	parts := make([]string, 0, len(chain))
 	for _, f := range chain {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
+		if f = strings.TrimSpace(f); f != "" {
+			parts = append(parts, f)
 		}
-		if _, dup := seen[f]; dup {
-			continue
-		}
-		seen[f] = struct{}{}
-		parts = append(parts, f)
 	}
 	return strings.Join(parts, ",")
 }

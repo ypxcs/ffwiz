@@ -316,6 +316,11 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 		if v.Min != nil && v.Max != nil && *v.Min > *v.Max {
 			errs = append(errs, at("validate.min (%v) is greater than validate.max (%v)", *v.Min, *v.Max))
 		}
+		if v.WithinInput && step.Type != StepInput {
+			// A time_range is checked against the input's length by
+			// CheckRangeAnswer, which knows about both of its times.
+			errs = append(errs, at("validate.within_input is only meaningful for a step whose answer is a timestamp, not %s", step.Type))
+		}
 	}
 
 	// Condition errors are wrapped separately so they carry the task and step,
@@ -337,6 +342,86 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 		default:
 			errs = append(errs, at("time_scale is not meaningful for type %q", step.Type))
 		}
+	}
+
+	if step.Compute != nil {
+		errs = append(errs, t.validateCompute(step, stepIDs, i, at)...)
+	}
+
+	return errs
+}
+
+// validateCompute checks a step whose arguments are calculated rather than
+// written down.
+func (t *Task) validateCompute(step Step, stepIDs map[string]int, index int, at func(string, ...any) error) []error {
+	var errs []error
+	c := step.Compute
+
+	switch c.Kind {
+	case "video_bitrate":
+	default:
+		errs = append(errs, at("compute.kind %q is unknown; the only kind is \"video_bitrate\"", c.Kind))
+	}
+
+	switch step.Type {
+	case StepChoice, StepInput:
+	default:
+		errs = append(errs, at("compute needs an answer that is a number of MiB, so type must be choice or input, not %s", step.Type))
+	}
+
+	if len(c.Template) == 0 {
+		errs = append(errs, at("compute.template is empty; there would be nothing to add to the command"))
+	}
+	if len(step.Template) > 0 || len(step.InputTemplate) > 0 {
+		errs = append(errs, at("compute and template cannot both be set; the calculated arguments come from compute.template"))
+	}
+	if len(step.Args) > 0 || len(step.Filters) > 0 {
+		errs = append(errs, at("compute contributes through compute.template, not args or filters"))
+	}
+	if c.Reserve < 0 || c.Reserve >= 1 {
+		errs = append(errs, at("compute.reserve must be a fraction between 0 and 1, got %v", c.Reserve))
+	}
+	if c.MinKbps < 0 {
+		errs = append(errs, at("compute.min_kbps cannot be negative, got %d", c.MinKbps))
+	}
+	if c.AudioKbps < 0 {
+		errs = append(errs, at("compute.audio_kbps cannot be negative, got %d", c.AudioKbps))
+	}
+	if c.AudioStep != "" {
+		idx, ok := stepIDs[c.AudioStep]
+		if !ok {
+			errs = append(errs, at("compute.audio_step references unknown step %q", c.AudioStep))
+		} else if idx >= index {
+			errs = append(errs, at("compute.audio_step references step %q, which is not earlier in the task", c.AudioStep))
+		}
+	}
+
+	for _, arg := range c.Template {
+		if strings.TrimSpace(arg) == "" {
+			errs = append(errs, at("compute.template has an empty entry"))
+		}
+		for _, m := range placeholderRe.FindAllStringSubmatch(arg, -1) {
+			switch m[1] {
+			case "bitrate", "maxrate", "bufsize", "value":
+			default:
+				errs = append(errs, at("compute.template placeholder {%s} is not available (want {bitrate}, {maxrate}, {bufsize} or {value})", m[1]))
+			}
+		}
+	}
+
+	// The answer has to be a size in MiB, whether it comes from a preset or is
+	// typed in.
+	checkSize := func(where, value string) {
+		if v, err := strconv.ParseFloat(value, 64); err != nil || v <= 0 {
+			errs = append(errs, at("%s %q is not a positive number of MiB", where, value))
+		}
+	}
+	if step.Type == StepChoice {
+		for _, ch := range step.Choices {
+			checkSize("compute choice value", ch.Value)
+		}
+	} else if step.Default != "" {
+		checkSize("compute default", step.Default)
 	}
 
 	return errs
@@ -364,7 +449,8 @@ func (t *Task) validateChoice(step Step, stepIndex int, stepIDs map[string]int, 
 
 	for name, args := range map[string][]string{
 		"args": c.Args, "input_args": c.InputArgs, "output_args": c.OutputArgs,
-		"filters": c.Filters, "filter_complex": c.FilterComplex, "maps": c.Maps,
+		"filters": c.Filters, "audio_filters": c.AudioFilters,
+		"filter_complex": c.FilterComplex, "maps": c.Maps,
 	} {
 		for j, a := range args {
 			if strings.TrimSpace(a) == "" {

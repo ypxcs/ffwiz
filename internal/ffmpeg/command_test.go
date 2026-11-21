@@ -264,7 +264,7 @@ func TestGuardPath(t *testing.T) {
 	}
 }
 
-func TestMergeFiltersDropsExactDuplicates(t *testing.T) {
+func TestMergeFiltersJoinsInOrder(t *testing.T) {
 	tests := []struct {
 		name  string
 		chain []string
@@ -274,9 +274,11 @@ func TestMergeFiltersDropsExactDuplicates(t *testing.T) {
 		{"single", []string{"scale=1280:-2"}, "scale=1280:-2"},
 		{"order preserved", []string{"scale=1280:-2", "fps=30"}, "scale=1280:-2,fps=30"},
 		{
-			"exact duplicates removed",
-			[]string{"scale=1280:-2", "fps=30", "scale=1280:-2"},
-			"scale=1280:-2,fps=30",
+			// An atempo chain for 0.25x is the same filter twice, and that is
+			// the point: deduplicating would change the playback speed.
+			"repeats are kept",
+			[]string{"atempo=0.5", "atempo=0.5"},
+			"atempo=0.5,atempo=0.5",
 		},
 		{"blanks skipped", []string{"", "  ", "hflip"}, "hflip"},
 		{"whitespace trimmed", []string{"  hflip  "}, "hflip"},

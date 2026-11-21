@@ -155,7 +155,33 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 		}
 	}
 
+	// A step that was never answered contributes nothing to the command, so the
+	// dump must say so rather than print a command that quietly left the answer
+	// out. The wizard itself will not run such a command (DECISIONS D29).
+	if pending := pendingSteps(res); len(pending) > 0 {
+		fmt.Fprintf(out, "\nwarning: unanswered: %s — the command below leaves %s out\n",
+			strings.Join(pending, ", "), plural(len(pending), "it", "them"))
+	}
+
 	fmt.Fprintf(out, "\ncommand\n%s\n", cmd.String())
+}
+
+// pendingSteps lists the active steps with no answer, in step order.
+func pendingSteps(res tasks.Resolution) []string {
+	var ids []string
+	for _, step := range res.Active {
+		if res.Pending[step.ID] {
+			ids = append(ids, step.ID)
+		}
+	}
+	return ids
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // dumpJSON is the machine-readable form, for tests that assert on structure
@@ -165,6 +191,7 @@ type dumpJSON struct {
 	Active   []string          `json:"active_steps"`
 	Answers  map[string]string `json:"answers"`
 	Skipped  map[string]string `json:"skipped"`
+	Pending  []string          `json:"pending"`
 	Command  []string          `json:"command"`
 	Display  string            `json:"display"`
 	Expected string            `json:"expected_duration"`
@@ -175,6 +202,7 @@ func writeDumpJSON(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, res t
 		TaskID:   task.ID,
 		Answers:  res.Answers,
 		Skipped:  res.Skipped,
+		Pending:  pendingSteps(res),
 		Command:  cmd.Args(),
 		Display:  cmd.String(),
 		Expected: cmd.ExpectedDuration().String(),

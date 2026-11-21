@@ -86,28 +86,36 @@ func (m Model) canReveal() bool {
 	}
 }
 
-// outputExists reports whether the output is a real file on disk right now.
+// outputExists reports whether the output is really on disk right now. A
+// numbered sequence counts as soon as one frame is there, because that is the
+// file the user can point at (DECISIONS D34).
 func (m Model) outputExists() bool {
-	if m.outputPath == "" {
-		return false
-	}
-	info, err := os.Stat(m.outputPath)
-	return err == nil && !info.IsDir()
+	return len(ffmpeg.OutputFiles(m.outputPath)) > 0
 }
 
 // sizeLine reports the output's size, and how it compares with the input when
-// the input's size is known (plan.md §6.8).
+// the input's size is known (plan.md §6.8). A sequence is measured as a whole:
+// comparing one frame of it with the input video would say nothing useful.
 func (m Model) sizeLine() string {
-	info, err := os.Stat(m.outputPath)
-	if err != nil {
-		return m.styles.Muted.Render("the file could not be measured: " + err.Error())
+	files := ffmpeg.OutputFiles(m.outputPath)
+	if len(files) == 0 {
+		return m.styles.Muted.Render("the file could not be measured")
 	}
-	out := format.Bytes(info.Size())
+	var total int64
+	for _, f := range files {
+		if info, err := os.Stat(f); err == nil {
+			total += info.Size()
+		}
+	}
+	out := format.Bytes(total)
+	if len(files) > 1 {
+		return fmt.Sprintf("%s in %d files", out, len(files))
+	}
 	in := m.inputSize()
 	if in <= 0 {
 		return out
 	}
-	delta := float64(in-info.Size()) / float64(in) * 100
+	delta := float64(in-total) / float64(in) * 100
 	switch {
 	case delta > 1:
 		return fmt.Sprintf("%s, %.0f%% smaller than the input", out, delta)
@@ -195,13 +203,18 @@ func (m Model) updateDone(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.
 	return m, nil
 }
 
-// revealOutput asks the desktop to show the output file.
+// revealOutput asks the desktop to show the output file. A sequence is shown by
+// its first frame, which is the one the file manager can put the cursor on.
 func (m Model) revealOutput() (tea.Model, tea.Cmd) {
 	if !m.canReveal() {
 		return m, nil
 	}
+	files := ffmpeg.OutputFiles(m.outputPath)
+	if len(files) == 0 {
+		return m, nil
+	}
 	reveal := m.reveal
-	path := m.outputPath
+	path := files[0]
 	return m, func() tea.Msg {
 		return revealMsg{err: reveal(path)}
 	}
@@ -210,17 +223,25 @@ func (m Model) revealOutput() (tea.Model, tea.Cmd) {
 // revealMsg reports the outcome of asking the desktop to open a folder.
 type revealMsg struct{ err error }
 
-// deletePartial removes the file left behind by a cancelled run, and only then:
-// after a failure the file may be worth keeping to look at (plan.md §6.7). It
-// also requires the file to be there: a cancel that landed before ffmpeg created
+// deletePartial removes what a cancelled run left behind, and only then: after a
+// failure the file may be worth keeping to look at (plan.md §6.7). It also
+// requires the output to be there: a cancel that landed before ffmpeg created
 // anything has nothing to delete, and reporting otherwise would be a lie.
 func (m Model) deletePartial() (tea.Model, tea.Cmd) {
-	if m.outcome != ffmpeg.OutcomeCancelled || m.removed || !m.outputExists() {
+	if m.outcome != ffmpeg.OutcomeCancelled || m.removed {
 		return m, nil
 	}
-	if err := os.Remove(m.outputPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		m.notice, m.noticeIsError = "could not delete the partial file: "+err.Error(), true
+	files := ffmpeg.OutputFiles(m.outputPath)
+	if len(files) == 0 {
 		return m, nil
+	}
+	// Every frame of a stopped sequence goes: leaving some behind would look
+	// like a complete result (DECISIONS D34).
+	for _, f := range files {
+		if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			m.notice, m.noticeIsError = "could not delete the partial file: "+err.Error(), true
+			return m, nil
+		}
 	}
 	m.removed = true
 	m.notice, m.noticeIsError = "", false

@@ -1,0 +1,39 @@
+# Scale a video to a preset height, keeping the aspect ratio (plan.md §5.5).
+#
+# scale=-2:H lets the width follow from the aspect ratio and rounds it to an
+# even number, which H.264 requires. The step's template does the work, so the
+# presets carry no arguments of their own.
+- id: resize
+  label: Resize a video
+  description: Scale a video to a preset height, keeping its aspect ratio.
+  requires: { video: true }
+  steps:
+    - id: height
+      prompt: Height
+      hint: The width follows from the aspect ratio. A height above the input's enlarges it.
+      type: resolution
+      template: ["-vf", "scale=-2:{value}"]
+      default: "720"
+      custom: true
+      validate: { min: 16, max: 4320 }
+      choices:
+        - { label: "1080p (Full HD)", value: "1080" }
+        - { label: "720p (HD)", value: "720", default: true }
+        - { label: "480p (SD)", value: "480" }
+        - { label: "360p (small)", value: "360" }
+
+    - id: audio
+      prompt: Audio
+      hint: Re-encoding the audio is only needed if the input's codec does not fit.
+      type: choice
+      when: { input_has: audio }
+      choices:
+        - { label: "Keep as is (no re-encode)", value: copy, args: ["-c:a", "copy"], default: true }
+        - { label: "Re-encode to AAC", value: aac, args: ["-c:a", "aac", "-b:a", "192k"], requires_encoder: aac }
+
+    - id: container
+      prompt: Output format
+      type: choice
+      choices:
+        - { label: MP4, value: mp4, output_ext: mp4, requires_muxer: mp4, default: true }
+        - { label: MKV, value: mkv, output_ext: mkv, requires_muxer: matroska }

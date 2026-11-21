@@ -92,6 +92,37 @@ func (m *MediaInfo) Duration() time.Duration {
 	return longest
 }
 
+// LastFrameTime is the latest point on the timeline from which a frame can still
+// be read: the duration, less one frame when the input reports a frame rate.
+//
+// Seeking to the very end of a clip selects no frame - measured on a 2s, 25fps
+// file: a frame comes out at 1.96s, and 1.999s already writes nothing and exits
+// 0 - so the end of the clip is not a place a timestamp may point at
+// (DECISIONS D36). Zero means "unknown", which callers must not treat as a
+// position.
+func (m *MediaInfo) LastFrameTime() time.Duration {
+	if m == nil {
+		return 0
+	}
+	d := m.Duration()
+	if d <= 0 {
+		return 0
+	}
+	frame := time.Duration(0)
+	if v, ok := m.FirstStream(StreamVideo); ok && v.FrameRate > 0 {
+		frame = time.Duration(float64(time.Second) / v.FrameRate)
+	}
+	// With no frame rate to go by, back off the smallest amount that still
+	// leaves the end of the clip unreachable: the end itself is never a frame.
+	if frame <= 0 || frame >= d {
+		frame = time.Millisecond
+	}
+	if frame >= d {
+		return 0
+	}
+	return d - frame
+}
+
 // Has reports whether the file contains at least one stream of the given type.
 func (m *MediaInfo) Has(t StreamType) bool {
 	for _, s := range m.Streams {

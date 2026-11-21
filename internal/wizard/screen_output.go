@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/ypxcs/ffwiz/internal/ffmpeg"
 	"github.com/ypxcs/ffwiz/internal/tasks"
 )
 
@@ -56,7 +57,7 @@ func (m Model) outputBody(width int) string {
 	b.WriteString("\n")
 
 	if m.conflict {
-		b.WriteString(m.styles.Warning.Render("  "+filepath.Base(m.outputPath)+" already exists.") + "\n\n")
+		b.WriteString(m.styles.Warning.Render("  "+m.conflictText()) + "\n\n")
 		for i, opt := range overwriteOptions {
 			b.WriteString(m.conflictLine(opt, i == m.conflictIdx) + "\n")
 		}
@@ -200,6 +201,38 @@ func (m Model) resolveConflict() (tea.Model, tea.Cmd) {
 	}
 }
 
+// conflictText says what the overwrite question is about. An ordinary name is
+// one file; a numbered sequence may already have written many frames, so it
+// counts them rather than pretending the pattern itself is on disk
+// (DECISIONS D34).
+func (m Model) conflictText() string {
+	base := filepath.Base(m.outputPath)
+	n := len(ffmpeg.OutputFiles(m.outputPath))
+	switch {
+	case !ffmpeg.IsSequence(m.outputPath):
+		return base + " already exists."
+	case n == 1:
+		return base + " matches an existing file."
+	default:
+		return fmt.Sprintf("%s matches %d existing files.", base, n)
+	}
+}
+
+// existingNotice explains that the output turned up since the question was
+// answered, which sends the user back to the output screen (DECISIONS D29).
+func (m Model) existingNotice() string {
+	base := filepath.Base(m.outputPath)
+	n := len(ffmpeg.OutputFiles(m.outputPath))
+	switch {
+	case !ffmpeg.IsSequence(m.outputPath):
+		return base + " now exists; go back and choose another name"
+	case n == 1:
+		return base + " now matches an existing file; go back and choose another name"
+	default:
+		return fmt.Sprintf("%s now matches %d existing files; go back and choose another name", base, n)
+	}
+}
+
 // confirmOutput checks the path and moves to the review screen.
 //
 // Overwrite protection is deliberately strict. plan.md §6.5 offers
@@ -227,13 +260,17 @@ func (m Model) confirmOutput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if info, err := os.Stat(path); err == nil {
-		if info.IsDir() {
-			// A folder is not a name to be replaced: the only useful answer is
-			// a different name, so the overwrite question is not offered.
-			m.notice, m.noticeIsError = filepath.Base(path)+" is a folder, not a file; choose another name", true
-			return m, nil
-		}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		// A folder is not a name to be replaced: the only useful answer is
+		// a different name, so the overwrite question is not offered.
+		m.notice, m.noticeIsError = filepath.Base(path)+" is a folder, not a file; choose another name", true
+		return m, nil
+	}
+
+	// The output may be one file or a numbered sequence, and with image2 an
+	// existing frame is replaced even under -n (DECISIONS D34), so a sequence
+	// whose frames are already there has to ask the same question.
+	if len(ffmpeg.OutputFiles(path)) > 0 {
 		m.outputPath = path
 		m.conflict, m.conflictIdx = true, 0
 		m.notice, m.noticeIsError = "", false

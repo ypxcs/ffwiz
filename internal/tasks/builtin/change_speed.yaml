@@ -1,0 +1,66 @@
+# Play a clip faster or slower, with the sound kept in step (plan.md §5.6).
+#
+# Video speed is setpts; audio speed is atempo. They are different filters on
+# different streams, so a speed is one choice that contributes to both chains
+# (Choice.audio_filters).
+#
+# atempo only accepts 0.5-2.0, so anything outside that range is a chain: 4x is
+# atempo=2.0 twice, and quarter speed is atempo=0.5 twice.
+#
+# Each step `time_scale: true` so the progress bar knows the output is shorter
+# (or longer) than the input (DECISIONS D3).
+- id: change_speed
+  label: Change the speed
+  description: Play a clip faster or slower, with the sound sped up to match.
+  requires: { video: true }
+  steps:
+    - id: speed
+      prompt: Speed
+      hint: The sound is sped up with the picture, so the pitch stays natural.
+      type: choice
+      time_scale: true
+      choices:
+        - label: "4x faster"
+          value: "4"
+          filters: ["setpts=PTS/4"]
+          audio_filters: ["atempo=2.0", "atempo=2.0"]
+        - label: "2x faster"
+          value: "2"
+          filters: ["setpts=PTS/2"]
+          audio_filters: ["atempo=2.0"]
+          default: true
+        - label: "1.5x faster"
+          value: "1.5"
+          filters: ["setpts=PTS/1.5"]
+          audio_filters: ["atempo=1.5"]
+        - label: "1.25x faster"
+          value: "1.25"
+          filters: ["setpts=PTS/1.25"]
+          audio_filters: ["atempo=1.25"]
+        - label: "Slower (0.5x)"
+          value: "0.5"
+          filters: ["setpts=PTS/0.5"]
+          audio_filters: ["atempo=0.5"]
+        - label: "Much slower (0.25x)"
+          value: "0.25"
+          filters: ["setpts=PTS/0.25"]
+          audio_filters: ["atempo=0.5", "atempo=0.5"]
+
+    - id: container
+      prompt: Output format
+      hint: Both formats re-encode to H.264 and AAC.
+      type: choice
+      choices:
+        - { label: MP4, value: mp4, output_ext: mp4, requires_muxer: mp4, default: true }
+        - { label: MKV, value: mkv, output_ext: mkv, requires_muxer: matroska }
+
+    - id: codecs
+      prompt: Codecs
+      hint: Re-encoding is required because the frames are being retimed.
+      type: choice
+      choices:
+        - label: "H.264 video, AAC audio"
+          value: h264aac
+          args: ["-c:v", "libx264", "-c:a", "aac", "-b:a", "192k"]
+          requires_encoder: libx264
+          default: true

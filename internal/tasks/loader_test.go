@@ -276,6 +276,19 @@ func TestLoadReportsBadYAML(t *testing.T) {
 			want:    "greater than",
 		},
 		{
+			// within_input refuses a timestamp past the end of the clip, which
+			// only means anything for a step whose answer is a time
+			// (DECISIONS D36).
+			name:    "within_input on a choice step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: choice, validate: { within_input: true }, choices: [{ label: L, value: v }] }\n",
+			want:    "only meaningful for a step whose answer is a timestamp",
+		},
+		{
+			name:    "within_input on a time_range step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: time_range, validate: { within_input: true } }\n",
+			want:    "only meaningful for a step whose answer is a timestamp",
+		},
+		{
 			name:    "filtergraph without maps",
 			builtin: "- id: x\n  label: X\n  steps:\n    - id: a\n      prompt: A\n      type: choice\n      choices: [{ label: L, value: v, filter_complex: [\"[0:v]gif[out]\"] }]\n",
 			want:    "no maps",

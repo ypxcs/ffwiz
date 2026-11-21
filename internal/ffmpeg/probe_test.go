@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func readFixture(t *testing.T, name string) []byte {
@@ -283,5 +284,70 @@ func TestFlexInt64AndDuration(t *testing.T) {
 		if diff := got - tc.wantSecs; diff > 1e-6 || diff < -1e-6 {
 			t.Errorf("flex(%q).Duration() = %v, want %v", tc.in, got, tc.wantSecs)
 		}
+	}
+}
+
+func TestLastFrameTime(t *testing.T) {
+	tests := []struct {
+		name string
+		info *MediaInfo
+		want time.Duration
+	}{
+		{
+			name: "a nil probe has no timeline",
+			info: nil,
+			want: 0,
+		},
+		{
+			// Two seconds at 25 fps: the last frame starts at 1.96s, and a seek
+			// to 1.999s already writes nothing (measured, DECISIONS D36).
+			name: "one frame is taken off the end",
+			info: &MediaInfo{
+				Format:  FormatInfo{Duration: 2 * time.Second},
+				Streams: []StreamInfo{{Type: StreamVideo, FrameRate: 25}},
+			},
+			want: 1960 * time.Millisecond,
+		},
+		{
+			name: "an unknown frame rate backs off a millisecond",
+			info: &MediaInfo{
+				Format:  FormatInfo{Duration: 2 * time.Second},
+				Streams: []StreamInfo{{Type: StreamVideo}},
+			},
+			want: 1999 * time.Millisecond,
+		},
+		{
+			name: "audio only backs off a millisecond",
+			info: &MediaInfo{
+				Format:  FormatInfo{Duration: 3 * time.Second},
+				Streams: []StreamInfo{{Type: StreamAudio}},
+			},
+			want: 2999 * time.Millisecond,
+		},
+		{
+			name: "no duration at all is unknown",
+			info: &MediaInfo{
+				Streams: []StreamInfo{{Type: StreamVideo, FrameRate: 25}},
+			},
+			want: 0,
+		},
+		{
+			// A single-frame image: the frame rate is meaningless, so the limit
+			// stays at the duration rather than going negative.
+			name: "a clip shorter than one frame",
+			info: &MediaInfo{
+				Format:  FormatInfo{Duration: 10 * time.Millisecond},
+				Streams: []StreamInfo{{Type: StreamVideo, FrameRate: 25}},
+			},
+			want: 9 * time.Millisecond,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.info.LastFrameTime(); got != tc.want {
+				t.Errorf("LastFrameTime() = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

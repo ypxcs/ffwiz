@@ -104,6 +104,29 @@ func (s Step) CheckAnswer(value string) error {
 	return s.ValidateValue(value)
 }
 
+// CheckTimeAnswer validates a timestamp answer against the last usable point on
+// the input, when the step asks for one (validate.within_input).
+//
+// Measured: a seek to the end of a clip selects no frame at all. ffmpeg then
+// writes nothing, prints nothing about it and exits 0, so the failure would show
+// up as "the file was not written" with no explanation (DECISIONS D36). A limit
+// of zero means the input's length is unknown, and the answer is only checked
+// for being a time.
+func (s Step) CheckTimeAnswer(answer string, limit time.Duration) error {
+	if s.Validate == nil || !s.Validate.WithinInput {
+		return nil
+	}
+	t, err := ParseTime(answer)
+	if err != nil {
+		return err
+	}
+	if limit > 0 && t > limit {
+		return fmt.Errorf("%s is past the end of the clip; the last usable point is %s",
+			FormatTimecode(t), FormatTimecode(limit))
+	}
+	return nil
+}
+
 // ── time ranges ─────────────────────────────────────────────────────────────
 
 // Range is a start and an end on the input's timeline.

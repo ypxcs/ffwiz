@@ -171,3 +171,51 @@ func TestCheckAnswer(t *testing.T) {
 		t.Errorf("CheckAnswer on a template-less step = %v, want nil", err)
 	}
 }
+
+// TestCheckTimeAnswer: a timestamp step asks for a point inside the clip, and
+// one at or past the end is refused. Measured: seeking there writes nothing and
+// ffmpeg exits 0, so the user would otherwise see a run that failed for no
+// stated reason (DECISIONS D36).
+func TestCheckTimeAnswer(t *testing.T) {
+	step := Step{
+		Type:          StepInput,
+		InputTemplate: []string{"-ss", "{value}"},
+		Validate:      &Validate{WithinInput: true},
+	}
+
+	// videoWithAudio is two seconds at 25 fps, so the last frame is at 1.96s.
+	limit := videoWithAudio().LastFrameTime()
+
+	tests := []struct {
+		name    string
+		answer  string
+		wantErr bool
+	}{
+		{"a time inside the clip", "1.5", false},
+		{"the first frame", "0", false},
+		{"the last usable point", "1.96", false},
+		{"the exact end", "2", true},
+		{"past the end", "10", true},
+		{"a clock at the end", "00:00:02.000", true},
+		{"not a time at all", "later", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := step.CheckTimeAnswer(tc.answer, limit)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("CheckTimeAnswer(%q, %s) = %v, wantErr %v", tc.answer, limit, err, tc.wantErr)
+			}
+		})
+	}
+
+	// A step that does not ask for a time on the input's timeline is not
+	// constrained, and neither is one whose input length is unknown.
+	plain := Step{Type: StepInput, InputTemplate: []string{"-ss", "{value}"}}
+	if err := plain.CheckTimeAnswer("9999", limit); err != nil {
+		t.Errorf("CheckTimeAnswer on a step without within_input = %v, want nil", err)
+	}
+	if err := step.CheckTimeAnswer("9999", 0); err != nil {
+		t.Errorf("CheckTimeAnswer with an unknown length = %v, want nil", err)
+	}
+}

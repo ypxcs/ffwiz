@@ -403,6 +403,13 @@ func (m Model) hintStep() string {
 	if !ok {
 		return ""
 	}
+	// A calculated answer shows its arithmetic: plan.md §5.2 asks for the math
+	// behind a target size to be visible while choosing it.
+	if step.Compute != nil {
+		if note := m.resolution().Notes[step.ID]; note != "" {
+			return note
+		}
+	}
 	switch step.Type {
 	case tasks.StepChoice, tasks.StepMulti:
 		shown := m.resolution().Shown[step.ID]
@@ -613,6 +620,17 @@ func (m Model) rangeAdvance(step tasks.Step) (tea.Model, tea.Cmd) {
 	return m.recordAndAdvance(step.ID, canonical)
 }
 
+// lastFrameTime is the latest point on the input at which a frame can still be
+// read, or 0 when the input's length is unknown. A timestamp step is checked
+// against it so a thumbnail "at the end" is refused rather than silently
+// producing no file (DECISIONS D36).
+func (m Model) lastFrameTime() time.Duration {
+	if m.info == nil {
+		return 0
+	}
+	return m.info.LastFrameTime()
+}
+
 // stepAdvance records the answer and moves to the next active step, which may be
 // a different set of steps than before the answer was recorded.
 func (m Model) stepAdvance() (tea.Model, tea.Cmd) {
@@ -671,6 +689,10 @@ func (m Model) stepAdvance() (tea.Model, tea.Cmd) {
 	default:
 		value := strings.TrimSpace(m.stepInput.Value())
 		if err := step.CheckAnswer(value); err != nil {
+			m.notice, m.noticeIsError = err.Error(), true
+			return m, nil
+		}
+		if err := step.CheckTimeAnswer(value, m.lastFrameTime()); err != nil {
 			m.notice, m.noticeIsError = err.Error(), true
 			return m, nil
 		}

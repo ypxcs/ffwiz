@@ -1,0 +1,38 @@
+# Keep only part of a clip (plan.md §5.4).
+#
+# The seek goes *before* -i, which makes ffmpeg jump straight to the point
+# instead of decoding from the start, and the duration goes after it, measured
+# from the seek point (DECISIONS D6). Copying is instant but can only start on a
+# keyframe, so the clip may begin a little earlier than asked; re-encoding is
+# frame-accurate.
+- id: trim
+  label: Trim or cut a clip
+  description: Keep only part of a video, either instantly or frame-accurately.
+  requires: { video: true }
+  steps:
+    - id: range
+      prompt: Which part should be kept?
+      hint: Use HH:MM:SS, or plain seconds.
+      type: time_range
+      min_label: Start
+      max_label: End
+      input_template: ["-ss", "{start}"]
+      template: ["-t", "{duration}"]
+
+    - id: mode
+      prompt: How should it be cut?
+      hint: Copying is instant but can only start on a keyframe.
+      type: choice
+      choices:
+        - label: Fast (copy, may start a moment early)
+          hint: Instant and lossless. The clip may start at the previous keyframe.
+          value: fast
+          output_ext: mp4
+          args: ["-c", "copy"]
+        - label: Accurate (re-encode)
+          hint: Frame-accurate, at the cost of re-encoding the clip.
+          value: accurate
+          output_ext: mp4
+          args: ["-c:v", "libx264", "-crf", "20", "-c:a", "aac", "-b:a", "192k"]
+          requires_encoder: libx264
+          default: true

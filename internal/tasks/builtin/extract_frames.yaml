@@ -1,0 +1,55 @@
+# Save a still frame, or a numbered sequence (plan.md §5.11).
+#
+# A seek before -i makes the single-frame case instant. The image2 muxer writes
+# a numbered sequence when the output name contains a %0Nd pattern, so the
+# sequence choices put that pattern in the output extension, giving a name like
+# clip_extract_frames.%04d.png. The wizard checks for such an output by looking
+# for the frames themselves rather than the pattern (DECISIONS D33).
+- id: extract_frames
+  label: Extract frames or a thumbnail
+  description: Save one frame at a chosen moment, or one frame every few seconds.
+  requires: { video: true }
+  steps:
+    - id: mode
+      prompt: What should be saved?
+      hint: A single frame makes a thumbnail; a sequence makes a contact sheet.
+      type: choice
+      choices:
+        - { label: "A single frame (thumbnail)", value: single, args: ["-frames:v", "1"], default: true }
+        - { label: "One frame every few seconds", value: every }
+
+    - id: at
+      prompt: At what time should the frame be taken?
+      hint: "HH:MM:SS or plain seconds."
+      type: input
+      when: { answer_is: { mode: single } }
+      default: "00:00:01"
+      placeholder: "00:00:01"
+      input_template: ["-ss", "{value}"]
+      validate:
+        regex: '^[0-9]+(:[0-9]{1,2}){0,2}(\.[0-9]+)?$'
+        # A time at the very end of the clip selects no frame and ffmpeg then
+        # writes nothing while still exiting 0, so it is refused here rather
+        # than reported as an unexplained empty run (DECISIONS D36).
+        within_input: true
+
+    - id: every
+      prompt: How often?
+      hint: One frame every N seconds.
+      type: choice
+      when: { answer_is: { mode: every } }
+      choices:
+        - { label: "Every second", value: "1", args: ["-vf", "fps=1"] }
+        - { label: "Every 2 seconds", value: "2", args: ["-vf", "fps=1/2"], default: true }
+        - { label: "Every 5 seconds", value: "5", args: ["-vf", "fps=1/5"] }
+        - { label: "Every 10 seconds", value: "10", args: ["-vf", "fps=1/10"] }
+
+    - id: image
+      prompt: Image format
+      hint: PNG is lossless; JPEG is smaller.
+      type: choice
+      choices:
+        - { label: "PNG (lossless)", value: png, output_ext: png, when: { answer_is: { mode: single } }, default: true }
+        - { label: "JPEG (smaller)", value: jpg, output_ext: jpg, when: { answer_is: { mode: single } } }
+        - { label: "PNG sequence", value: png_seq, output_ext: "%04d.png", when: { answer_is: { mode: every } }, default: true }
+        - { label: "JPEG sequence", value: jpg_seq, output_ext: "%04d.jpg", when: { answer_is: { mode: every } } }

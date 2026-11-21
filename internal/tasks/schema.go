@@ -118,6 +118,31 @@ type Step struct {
 	// honest (DECISIONS D3). It is a flag rather than a step id convention so a
 	// typo in an id cannot silently break the progress bar.
 	TimeScale bool `yaml:"time_scale"`
+
+	// Compute makes the engine calculate the step's arguments instead of
+	// reading them from the YAML, because they depend on the input. It is how
+	// "compress to a target size" works: the video bitrate that lands a clip
+	// near 25 MiB depends on how long the clip is (plan.md §5.2, DECISIONS D8).
+	Compute *Compute `yaml:"compute"`
+}
+
+// Compute describes a calculated contribution. Only kind "video_bitrate" is
+// defined: the step's answer is a target size in MiB, and the arguments it
+// contributes are a bitrate plan for the probed input's length.
+type Compute struct {
+	// Kind selects the calculation. Anything else is a load-time error.
+	Kind string `yaml:"kind"`
+	// AudioStep names the step whose answer is an audio bitrate ("192k"); that
+	// bitrate is subtracted from the target. AudioKbps is used when the step is
+	// absent, or when its answer is not a bitrate at all (a stream copy, say).
+	AudioStep string `yaml:"audio_step"`
+	AudioKbps int    `yaml:"audio_kbps"`
+	// Reserve and MinKbps override the ffmpeg package's defaults.
+	Reserve float64 `yaml:"reserve"`
+	MinKbps int     `yaml:"min_kbps"`
+	// Template is the output arguments, with {bitrate}, {maxrate}, {bufsize}
+	// and {value} available.
+	Template []string `yaml:"template"`
 }
 
 // Choice is one option within a choice or multi step.
@@ -158,6 +183,12 @@ type Choice struct {
 	Filters []string     `yaml:"filters"`
 	Target  FilterTarget `yaml:"target"`
 
+	// AudioFilters contributes to the -af chain as well as Filters does, so a
+	// single choice can change both streams at once. The speed step needs it:
+	// "2x faster" is setpts on the video *and* atempo on the audio, and one
+	// Target field cannot name both (plan.md §5.6).
+	AudioFilters []string `yaml:"audio_filters"`
+
 	// FilterComplex is a complete filtergraph. When set, Maps must be set too
 	// or ffmpeg fails with "Output file does not contain any stream"
 	// (DECISIONS D2). Validated at load time.
@@ -195,6 +226,12 @@ type Validate struct {
 	Regex string   `yaml:"regex"`
 	Min   *float64 `yaml:"min"`
 	Max   *float64 `yaml:"max"`
+
+	// WithinInput requires the answer to be a point on the input's timeline
+	// rather than a number: seeking to a time at or past the end of the clip
+	// writes no file at all and ffmpeg exits 0, so the wizard refuses it here
+	// instead of reporting an unexplained empty run (DECISIONS D36).
+	WithinInput bool `yaml:"within_input"`
 }
 
 // Condition gates a step or expresses a nested combinator (plan.md §4.5).

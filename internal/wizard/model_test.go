@@ -193,6 +193,34 @@ func builtinSet(t *testing.T) *tasks.Set {
 	return set
 }
 
+// selectTask points the task-list cursor at the named task, so a test says
+// which task it is about instead of depending on the catalogue's order, which
+// grows as tasks are added.
+func (s *session) selectTask(id string) {
+	s.t.Helper()
+	for i, e := range s.model.taskEntries() {
+		if e.task.ID == id {
+			s.model.taskIndex = i
+			return
+		}
+	}
+	s.t.Fatalf("task %q is not in the catalogue", id)
+}
+
+// startTask opens the task list (if it is not already open) and starts the named
+// task, so a test is not tied to the order the catalogue happens to load in.
+func (s *session) startTask(id string) {
+	s.t.Helper()
+	if s.model.screen == ScreenInput {
+		s.press("enter")
+	}
+	if s.model.screen != ScreenTask {
+		s.t.Fatalf("startTask(%q): screen = %v, want the task list", id, s.model.screen)
+	}
+	s.selectTask(id)
+	s.press("enter")
+}
+
 // wizardAt opens a session with the shipped catalogue and a file already probed,
 // which is where the wizard is after the input screen.
 func wizardAt(t *testing.T, input string) *session {
@@ -227,7 +255,7 @@ func TestWizardHappyPath(t *testing.T) {
 		t.Errorf("the task list does not show the catalogue:\n%s", view)
 	}
 
-	s.press("enter") // start convert_video
+	s.startTask("convert_video")
 	if s.model.screen != ScreenStep {
 		t.Fatalf("screen = %v, want the first step", s.model.screen)
 	}
@@ -290,7 +318,7 @@ func TestWizardWebMSwapsCodecsAndSteps(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter") // input summary, task list
+	s.startTask("convert_video") // input summary, task list
 
 	// Choose WebM: H.264 cannot be muxed into it, so the codec list must shrink
 	// and the quality question must follow VP9.
@@ -339,7 +367,7 @@ func TestWizardGoingBackKeepsAnswersAndRecomputes(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter") // summary, task list
+	s.startTask("convert_video") // summary, task list
 
 	// container, codec=H.265, quality=Small file, audio.
 	//
@@ -387,7 +415,7 @@ func TestWizardGoingBackKeepsAnswersAndRecomputes(t *testing.T) {
 func TestWizardChangingAnAnswerDropsTheStepsItRuledOut(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
-	s.press("enter", "enter")
+	s.startTask("convert_video")
 
 	// Answer everything for MP4/H.264, then go back and switch the container to
 	// WebM. The H.264-specific steps must disappear rather than linger with
@@ -447,7 +475,8 @@ func atOutput(t *testing.T) (*session, string) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -573,7 +602,8 @@ func TestWizardAcceptsOnlyAPlaceItCanWrite(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
@@ -613,7 +643,8 @@ func TestWizardRefusesAFolderItCannotWriteTo(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
@@ -642,7 +673,8 @@ func TestWizardRefusesAFolderItCannotWriteTo(t *testing.T) {
 func TestWizardWillNotStartWhenTheOutputAppeared(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
-	s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter", "enter")
 
 	if s.model.screen != ScreenReview {
 		t.Fatalf("screen = %v, want the review screen", s.model.screen)
@@ -666,7 +698,8 @@ func TestWizardRefusesTheInputAsOutput(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
-	s.press("enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
 
 	s.model.outputInput.SetValue(input)
 	s.press("enter")
@@ -708,7 +741,8 @@ func TestWizardRefusesATaskTheInputCannotSupport(t *testing.T) {
 func TestWizardLettersDoNotTriggerActionsInTextFields(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
-	s.press("enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -733,7 +767,8 @@ func TestWizardCopyWithoutAClipboardExplainsItself(t *testing.T) {
 	// No Clipboard in Deps, which is what a caller that cannot offer one passes.
 	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps})
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
-	s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter", "c")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter", "enter", "c")
 
 	if s.model.screen != ScreenReview {
 		t.Fatalf("screen = %v, want the review screen", s.model.screen)
@@ -752,7 +787,8 @@ func TestWizardCopyFailureIsReported(t *testing.T) {
 	caps := machineCaps()
 	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps, Clipboard: clip})
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
-	s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter", "c")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter", "enter", "c")
 
 	if !strings.Contains(s.view(), "clipboard is full") {
 		t.Errorf("the clipboard error was swallowed:\n%s", s.view())
@@ -784,7 +820,8 @@ func TestWizardQuitKeys(t *testing.T) {
 func TestReviewAlignsTheAnswerColumn(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
-	s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter")
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter", "enter")
 
 	// The label column is 18 wide, plus the space before the answer, so every
 	// answer begins in the same place no matter how long its label is.
@@ -877,7 +914,7 @@ func TestViewIsTotal(t *testing.T) {
 		{
 			name: "choice step",
 			want: []string{"Output format", "MP4", "command"},
-			run:  func(s *session) { s.press("enter", "enter") },
+			run:  func(s *session) { s.startTask("convert_video") },
 		},
 		{
 			name: "input step",
@@ -888,12 +925,12 @@ func TestViewIsTotal(t *testing.T) {
 		{
 			name: "output",
 			want: []string{"Where should the result go?"},
-			run:  func(s *session) { s.press("enter", "enter", "enter", "enter", "enter", "enter") },
+			run:  func(s *session) { s.startTask("convert_video"); s.press("enter", "enter", "enter", "enter") },
 		},
 		{
 			name: "review",
 			want: []string{"Ready to go", "Output format", "press r to run it"},
-			run:  func(s *session) { s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter") },
+			run:  func(s *session) { s.startTask("convert_video"); s.press("enter", "enter", "enter", "enter", "enter") },
 		},
 		{
 			name: "review with an unanswered step",
@@ -924,7 +961,8 @@ func TestViewIsTotal(t *testing.T) {
 			run: func(s *session) {
 				// Walk to the review screen first: the progress bar needs the
 				// command, and the expected duration comes from it.
-				s.press("enter", "enter", "enter", "enter", "enter", "enter", "enter")
+				s.startTask("convert_video")
+				s.press("enter", "enter", "enter", "enter", "enter")
 				s.model.screen = ScreenRun
 				s.model.elapsed = 3 * time.Second
 				s.model.progress = ffmpeg.Progress{OutTime: time.Second, Speed: 2, TotalSize: 2048, Bitrate: 183600}
@@ -1030,7 +1068,7 @@ func TestViewIsTotal(t *testing.T) {
 func TestViewAtEightyColumns(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "a-file-with-a-fairly-long-name.mp4"))
-	s.press("enter", "enter")
+	s.startTask("convert_video")
 
 	next, _ := s.model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	s.model = next.(Model)

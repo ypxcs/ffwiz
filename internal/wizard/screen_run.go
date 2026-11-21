@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,11 +65,11 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 
 	// The output screen checked this before the review screen existed; a file
 	// that appeared since then would otherwise turn a "run" into a silent
-	// refusal, because -n exits 0 without writing (DECISIONS D9).
+	// refusal, because -n exits 0 without writing (DECISIONS D9) - and for a
+	// numbered sequence it would not even refuse (DECISIONS D34).
 	if !m.overwrite {
-		if _, err := os.Stat(m.outputPath); err == nil {
-			m.notice = filepath.Base(m.outputPath) + " now exists; go back and choose another name"
-			m.noticeIsError = true
+		if len(ffmpeg.OutputFiles(m.outputPath)) > 0 {
+			m.notice, m.noticeIsError = m.existingNotice(), true
 			m.screen = ScreenOutput
 			m.conflict, m.conflictIdx = true, 0
 			return m, nil

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
+	"github.com/ypxcs/ffwiz/internal/format"
 )
 
 // Engine runs a single task against a probed input.
@@ -76,6 +77,12 @@ type Resolution struct {
 	// output plays twice as fast and is therefore half as long. It is 1 when no
 	// step changes the playback speed.
 	TimeScale float64
+
+	// Notes holds a plain-language explanation of a calculated answer, keyed by
+	// step id: the "about 1196 kbit/s of video" line that plan.md §5.2 asks to
+	// show alongside a target-size question. Steps that are not calculated have
+	// no entry.
+	Notes map[string]string
 }
 
 // Resolve walks the task's steps in order and works out which are active.
@@ -92,6 +99,7 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 		HiddenChoices: map[string][]Choice{},
 		Shown:         map[string][]Choice{},
 		Pending:       map[string]bool{},
+		Notes:         map[string]string{},
 		TimeScale:     1,
 	}
 
@@ -169,6 +177,14 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 					for _, skip := range c.Skips {
 						markSkipped(skippedByAnswer, skip, fmt.Sprintf("not needed when %s includes %q", step.ID, c.Value))
 					}
+				}
+			}
+			if step.Compute != nil {
+				// A calculated answer explains itself: the same arithmetic that
+				// produces its arguments also produces the sentence the wizard
+				// shows next to the question (plan.md §5.2).
+				if plan, err := e.planBitrate(step, res.Answers); err == nil {
+					res.Notes[step.ID] = planNote(plan)
 				}
 			}
 		}
@@ -546,6 +562,17 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 			continue
 		}
 
+		if step.Compute != nil {
+			// The arguments are calculated rather than written down, so they
+			// cannot be rendered before the input has been measured.
+			args, err := e.computedArgs(step, res)
+			if err != nil {
+				return nil, nil, res, err
+			}
+			req.OutputArgs = append(req.OutputArgs, args...)
+			continue
+		}
+
 		switch step.Type {
 		case StepChoice:
 			applyChoice(&req, res.Choices[step.ID])
@@ -623,6 +650,9 @@ func applyChoice(req *ffmpeg.Request, c Choice) {
 	default:
 		req.VideoFilters = append(req.VideoFilters, c.Filters...)
 	}
+	// AudioFilters land in -af regardless of Target, so a choice can change both
+	// the picture and the sound.
+	req.AudioFilters = append(req.AudioFilters, c.AudioFilters...)
 	// OutputArgs are emitted after filters and maps, which matters when a
 	// flag such as -f depends on a mapping having been established.
 	req.OutputArgs = append(req.OutputArgs, c.OutputArgs...)
@@ -695,6 +725,23 @@ func (e *Engine) expectedDuration(res Resolution) time.Duration {
 	return duration
 }
 
+// expand replaces every {name} in a template with its value. Names left out of
+// vars are left in place: unreachable for a validated task, but visible rather
+// than silent if it ever happens.
+func expand(tmpl []string, vars map[string]string) []string {
+	args := make([]string, 0, len(tmpl))
+	for _, t := range tmpl {
+		args = append(args, placeholderRe.ReplaceAllStringFunc(t, func(m string) string {
+			name := placeholderRe.FindStringSubmatch(m)[1]
+			if v, ok := vars[name]; ok {
+				return v
+			}
+			return m
+		}))
+	}
+	return args
+}
+
 var placeholderRe = regexp.MustCompile(`\{([a-z_]+)\}`)
 
 // templateArgs expands a step's templates into arguments: the output-side ones
@@ -721,21 +768,61 @@ func templateArgs(step Step, res Resolution) (outputArgs, inputArgs []string) {
 			vars["duration"] = FormatTimecode(r.Duration())
 		}
 	}
+	return expand(step.Template, vars), expand(step.InputTemplate, vars)
+}
 
-	expand := func(tmpl []string) []string {
-		args := make([]string, 0, len(tmpl))
-		for _, t := range tmpl {
-			args = append(args, placeholderRe.ReplaceAllStringFunc(t, func(m string) string {
-				name := placeholderRe.FindStringSubmatch(m)[1]
-				if v, ok := vars[name]; ok {
-					return v
-				}
-				// Unreachable for a loaded task; leaving the placeholder in
-				// place makes a mistake visible rather than silent.
-				return m
-			}))
-		}
-		return args
+// planBitrate works out the bitrate plan for a compute step from its answer and
+// the answers of the steps it reads.
+func (e *Engine) planBitrate(step Step, answers map[string]string) (ffmpeg.BitratePlan, error) {
+	if step.Compute == nil {
+		return ffmpeg.BitratePlan{}, errors.New("this step has no calculation")
 	}
-	return expand(step.Template), expand(step.InputTemplate)
+	if e.Info == nil {
+		return ffmpeg.BitratePlan{}, errors.New("cannot plan a bitrate without a probed input")
+	}
+	target, err := strconv.ParseFloat(strings.TrimSpace(answers[step.ID]), 64)
+	if err != nil {
+		return ffmpeg.BitratePlan{}, fmt.Errorf("%q is not a size in MiB", answers[step.ID])
+	}
+	audioKbps := step.Compute.AudioKbps
+	if step.Compute.AudioStep != "" {
+		// A stream copy or a codec name is not a bitrate, and then the declared
+		// AudioKbps stands in for it.
+		if kbps, ok := ffmpeg.ParseBitrateKbps(answers[step.Compute.AudioStep]); ok {
+			audioKbps = kbps
+		}
+	}
+	return ffmpeg.PlanBitrate(target, e.Info.Duration(), audioKbps, step.Compute.Reserve, step.Compute.MinKbps)
+}
+
+// computedArgs renders a compute step's arguments, and the note that explains
+// them.
+func (e *Engine) computedArgs(step Step, res Resolution) ([]string, error) {
+	plan, err := e.planBitrate(step, res.Answers)
+	if err != nil {
+		return nil, err
+	}
+	vars := map[string]string{
+		"value":   res.Answers[step.ID],
+		"bitrate": strconv.Itoa(plan.VideoKbps) + "k",
+		"maxrate": strconv.Itoa(plan.MaxKbps) + "k",
+		"bufsize": strconv.Itoa(plan.BufsizeKbps) + "k",
+	}
+	return expand(step.Compute.Template, vars), nil
+}
+
+// planNote is the sentence that shows the arithmetic, e.g.
+// "about 1.2 Mbit/s of video, so 10 MiB fits in 1:00".
+func planNote(plan ffmpeg.BitratePlan) string {
+	parts := []string{
+		fmt.Sprintf("about %s of video", format.BitRate(int64(plan.VideoKbps)*1000)),
+	}
+	spoken := make([]string, 0, 2)
+	if plan.AudioKbps > 0 {
+		spoken = append(spoken, fmt.Sprintf("%d kbit/s of audio", plan.AudioKbps))
+	}
+	spoken = append(spoken, fmt.Sprintf("%.0f%% of container overhead", plan.Reserve*100))
+	parts = append(parts, "after "+strings.Join(spoken, " and "))
+	parts = append(parts, fmt.Sprintf("so %.0f MiB fits in %s", plan.TargetMiB, format.Clock(plan.Duration)))
+	return strings.Join(parts, ", ")
 }

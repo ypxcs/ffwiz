@@ -1,0 +1,58 @@
+# Save the audio track on its own (plan.md §5.3). Every codec is gated on the
+# encoder this ffmpeg build actually has, so an option that would fail at run
+# time is hidden with an explanation instead (DECISIONS D17).
+- id: extract_audio
+  label: Extract the audio
+  description: Save the sound on its own as MP3, M4A, FLAC, WAV or Opus.
+  requires: { audio: true }
+  steps:
+    - id: format
+      prompt: Audio format
+      hint: MP3 and M4A are small and play anywhere. FLAC and WAV are lossless.
+      type: choice
+      choices:
+        - label: MP3
+          hint: Plays on everything, at the cost of a little quality.
+          value: mp3
+          output_ext: mp3
+          args: ["-vn", "-c:a", "libmp3lame"]
+          requires_encoder: libmp3lame
+          default: true
+        - label: "M4A (AAC)"
+          hint: The audio-only flavour of MP4. Good quality at a small size.
+          value: m4a
+          output_ext: m4a
+          args: ["-vn", "-c:a", "aac"]
+          requires_encoder: aac
+        - label: "FLAC (lossless)"
+          hint: Exactly the original samples, in about half the space.
+          value: flac
+          output_ext: flac
+          args: ["-vn", "-c:a", "flac"]
+          requires_encoder: flac
+        - label: "WAV (uncompressed)"
+          hint: Lossless and enormous. Useful for editing.
+          value: wav
+          output_ext: wav
+          args: ["-vn", "-c:a", "pcm_s16le"]
+        - label: Opus
+          hint: The best quality per bitrate, but some devices cannot play it.
+          value: opus
+          output_ext: opus
+          args: ["-vn", "-c:a", "libopus"]
+          requires_encoder: libopus
+
+    # Only the lossy formats take a bitrate; FLAC and WAV are asked nothing.
+    - id: bitrate
+      prompt: Audio bitrate
+      hint: Higher means better sound and a bigger file.
+      type: choice
+      when:
+        any:
+          - { answer_is: { format: mp3 } }
+          - { answer_is: { format: m4a } }
+          - { answer_is: { format: opus } }
+      choices:
+        - { label: "128 kbit/s", value: "128", args: ["-b:a", "128k"] }
+        - { label: "192 kbit/s (recommended)", value: "192", args: ["-b:a", "192k"], default: true }
+        - { label: "320 kbit/s", value: "320", args: ["-b:a", "320k"] }

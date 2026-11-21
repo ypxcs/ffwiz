@@ -568,6 +568,9 @@ func (o Outcome) String() string {
 // run needs no error message. Success therefore also requires the output file to
 // exist and be non-empty (DECISIONS D9).
 //
+// "The output file" is really "the files the output name produced": a numbered
+// sequence has no single file to stat (DECISIONS D34).
+//
 // The returned hint is a plain-language explanation, or "" when there is nothing
 // useful to add.
 func Diagnose(res Result, outputPath string) (Outcome, string) {
@@ -580,10 +583,7 @@ func Diagnose(res Result, outputPath string) (Outcome, string) {
 		return OutcomeRefused, "the output file already exists; go back and choose another name"
 	}
 
-	written := false
-	if info, err := os.Stat(outputPath); err == nil && !info.IsDir() && info.Size() > 0 {
-		written = true
-	}
+	written := outputWritten(outputPath)
 
 	if res.Err != nil {
 		return OutcomeFailed, hintFor(res)

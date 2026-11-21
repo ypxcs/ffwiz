@@ -1,0 +1,85 @@
+# Compress a video either to a quality level or to a target file size
+# (plan.md §5.2). The target-size branch computes the video bitrate from the
+# clip's own length, which is why it uses a `compute` block with a template
+# rather than fixed arguments.
+#
+# Argument placement follows DECISIONS D19: everything here is an output option.
+- id: compress_video
+  label: Compress a video
+  description: Shrink a video, either to a quality level or to a target file size.
+  requires: { video: true }
+  steps:
+    - id: method
+      prompt: How should the size be decided?
+      hint: A quality level is predictable; a target size is precise.
+      type: choice
+      choices:
+        - label: Quality level (CRF)
+          hint: Constant quality. The file size depends on the content.
+          value: quality
+          default: true
+        - label: Target file size
+          hint: Aims for a size, so the bitrate is worked out from the clip's length.
+          value: size
+
+    - id: codec
+      prompt: Video codec
+      hint: H.265 makes a smaller file at the same quality, but encodes more slowly.
+      type: choice
+      choices:
+        - label: H.264 (most compatible)
+          value: h264
+          args: ["-c:v", "libx264"]
+          requires_encoder: libx264
+          default: true
+        - label: H.265 / HEVC (smaller files)
+          value: h265
+          args: ["-c:v", "libx265"]
+          requires_encoder: libx265
+
+    - id: quality
+      prompt: Quality
+      hint: Higher quality means a bigger file.
+      type: choice
+      when: { answer_is: { method: quality } }
+      choices:
+        - { label: "High (large file)", value: high, args: ["-crf", "20"] }
+        - { label: "Balanced (recommended)", value: balanced, args: ["-crf", "26"], default: true }
+        - { label: "Small file", value: small, args: ["-crf", "32"] }
+
+    # The audio question comes before the target size because the bitrate plan
+    # subtracts whatever the audio is going to cost (DECISIONS D8).
+    - id: audio
+      prompt: Audio
+      hint: Keeping the audio as it is costs no extra time.
+      type: choice
+      when: { input_has: audio }
+      choices:
+        - { label: "Keep as is (no re-encode)", value: copy, args: ["-c:a", "copy"], default: true }
+        - { label: "Re-encode to AAC 128k", value: aac128, args: ["-c:a", "aac", "-b:a", "128k"], requires_encoder: aac }
+        - { label: "Re-encode to MP3 192k", value: mp3, args: ["-c:a", "libmp3lame", "-b:a", "192k"], requires_encoder: libmp3lame }
+        - { label: Remove audio, value: none, args: ["-an"] }
+
+    - id: size
+      prompt: Target size
+      hint: The video bitrate is worked out so the file lands near this size.
+      type: choice
+      when: { answer_is: { method: size } }
+      default: "25"
+      compute:
+        kind: video_bitrate
+        audio_step: audio
+        audio_kbps: 128
+        template: ["-b:v", "{bitrate}", "-maxrate", "{maxrate}", "-bufsize", "{bufsize}"]
+      choices:
+        - { label: "10 MiB", value: "10" }
+        - { label: "25 MiB", value: "25", default: true }
+        - { label: "50 MiB", value: "50" }
+        - { label: "100 MiB", value: "100" }
+
+    - id: container
+      prompt: Output format
+      type: choice
+      choices:
+        - { label: MP4, value: mp4, output_ext: mp4, requires_muxer: mp4, default: true }
+        - { label: MKV, value: mkv, output_ext: mkv, requires_muxer: matroska }

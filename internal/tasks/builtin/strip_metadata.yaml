@@ -1,0 +1,26 @@
+# Remove the metadata a file carries: title, author, camera, GPS (plan.md §5.10).
+#
+# -map_metadata -1 drops the global metadata and every stream's. Copying the
+# streams makes this instant, but it only works when the input's codecs fit the
+# output container, so a re-encode is offered as the fallback.
+- id: strip_metadata
+  label: Strip metadata
+  description: Remove the title, camera, GPS and other metadata from a file.
+  requires: { video: true }
+  steps:
+    - id: mode
+      prompt: How should the streams be handled?
+      hint: Copying is instant and lossless; re-encoding always works.
+      type: choice
+      choices:
+        - label: "Copy (instant, keeps the original quality)"
+          value: copy
+          output_ext: mp4
+          args: ["-map_metadata", "-1", "-c", "copy"]
+          requires_muxer: mp4
+          default: true
+        - label: "Re-encode to H.264/AAC"
+          value: reencode
+          output_ext: mp4
+          args: ["-map_metadata", "-1", "-c:v", "libx264", "-crf", "20", "-c:a", "aac", "-b:a", "192k"]
+          requires_encoder: libx264

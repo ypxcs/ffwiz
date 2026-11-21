@@ -215,6 +215,19 @@ func TestDiagnose(t *testing.T) {
 	}
 	missing := filepath.Join(dir, "missing.mp4")
 
+	// Two frames of a numbered sequence, which is a success even though the
+	// pattern itself is not a path on disk (DECISIONS D34).
+	sequence := filepath.Join(dir, "frames.%04d.png")
+	for _, f := range []string{"frames.0001.png", "frames.0002.png"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emptySequence := filepath.Join(dir, "blank.%04d.png")
+	if err := os.WriteFile(filepath.Join(dir, "blank.0001.png"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name       string
 		res        Result
@@ -250,6 +263,28 @@ func TestDiagnose(t *testing.T) {
 			name:     "an empty output is not a success",
 			res:      Result{ExitCode: 0},
 			output:   empty,
+			want:     OutcomeFailed,
+			wantHint: "was not written",
+		},
+		{
+			// A numbered sequence has no single file to stat, so the frames
+			// that were written are what proves the run worked (DECISIONS D34).
+			name:   "a written sequence is a success",
+			res:    Result{ExitCode: 0},
+			output: sequence,
+			want:   OutcomeSucceeded,
+		},
+		{
+			name:     "a sequence of empty files is not a success",
+			res:      Result{ExitCode: 0},
+			output:   emptySequence,
+			want:     OutcomeFailed,
+			wantHint: "was not written",
+		},
+		{
+			name:     "a sequence that wrote nothing is a failure",
+			res:      Result{ExitCode: 0},
+			output:   filepath.Join(dir, "none.%04d.png"),
 			want:     OutcomeFailed,
 			wantHint: "was not written",
 		},
