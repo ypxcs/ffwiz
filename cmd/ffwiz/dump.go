@@ -59,6 +59,20 @@ func parseAnswers(values []string) (map[string]string, error) {
 	return answers, nil
 }
 
+// addAnswers merges --answer values, which are taken verbatim so a value may
+// contain a comma (a time_range answer is "start,end").
+func addAnswers(answers map[string]string, values []string) error {
+	for _, pair := range values {
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return fmt.Errorf("invalid --answer entry %q: expected key=value", pair)
+		}
+		answers[key] = strings.TrimSpace(value)
+	}
+	return nil
+}
+
 // runDump loads the task set, resolves the task and prints the result.
 func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags) error {
 	task, ok := set.Get(flags.TaskID)

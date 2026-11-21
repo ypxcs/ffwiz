@@ -48,6 +48,14 @@ func run() error {
 		answerFlags = append(answerFlags, v)
 		return nil
 	})
+	// A time_range answer is "start,end", which the comma-separated flag above
+	// cannot express. --answer takes one pair verbatim so every answer a step
+	// can hold is reachable from the shell.
+	var answerVerbatim []string
+	flag.Func("answer", "one step=value answer, taken verbatim, repeatable (with --dump)", func(v string) error {
+		answerVerbatim = append(answerVerbatim, v)
+		return nil
+	})
 	flag.Parse()
 
 	// The TUI owns stdout and stderr, so a log file is the only way to see what
@@ -104,6 +112,9 @@ func run() error {
 	case *dumpTask != "":
 		answers, err := parseAnswers(answerFlags)
 		if err != nil {
+			return err
+		}
+		if err := addAnswers(answers, answerVerbatim); err != nil {
 			return err
 		}
 		return runDump(os.Stdout, tools, set, dumpFlags{

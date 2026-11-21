@@ -1,0 +1,105 @@
+# plan.md §5.7: "Make a GIF. FPS, width, and palette-based quality
+# (palettegen/paletteuse), optional time range."
+#
+# A GIF is written through -vf, not -filter_complex, because the whole palette
+# recipe is one simple filtergraph: ffmpeg accepts a graph with a split and two
+# chained branches as long as it has one unlabelled input and one unlabelled
+# output. That is what lets the frame rate, the scale and the palette each be a
+# separate answer merged into a single -vf chain in step order (DECISIONS D37).
+#
+# The gif muxer only carries video, so ffmpeg drops the audio stream by itself:
+# measured, `-i av.mp4` with only -vf maps "0:0 -> 0:0" and nothing else.
+- id: gif
+  label: Make a GIF
+  description: A short, silent animation with a palette so it does not look muddy.
+  requires: { video: true }
+  steps:
+    - id: fps
+      prompt: Frame rate
+      hint: GIFs are usually 10-15 fps. Fewer frames means a smaller file.
+      type: choice
+      choices:
+        - label: 10 fps (smooth)
+          hint: The usual answer for a short animation.
+          value: "10"
+          filters: ["fps=10"]
+          default: true
+        - label: 15 fps
+          hint: Smoother, and noticeably larger.
+          value: "15"
+          filters: ["fps=15"]
+        - label: 5 fps (smallest file)
+          hint: Choppy, but a fraction of the size.
+          value: "5"
+          filters: ["fps=5"]
+
+    - id: width
+      prompt: Width
+      hint: The height follows the aspect ratio and is kept even.
+      type: choice
+      choices:
+        - label: 320 px (small)
+          hint: Good for a chat message.
+          value: "320"
+          filters: ["scale=320:-1:flags=lanczos"]
+          output_ext: gif
+          default: true
+        - label: 480 px
+          hint: A middle ground.
+          value: "480"
+          filters: ["scale=480:-1:flags=lanczos"]
+          output_ext: gif
+        - label: 640 px (large)
+          hint: Details survive, but the file grows quickly.
+          value: "640"
+          filters: ["scale=640:-1:flags=lanczos"]
+          output_ext: gif
+        - label: Keep the original size
+          hint: No scaling. The file can be very large.
+          value: "0"
+          filters: ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+          output_ext: gif
+
+    # A GIF's default 256-colour palette is built from one frame, which makes the
+    # rest shimmer. palettegen/paletteuse build a palette from the clip itself
+    # instead. The two filters have to run in one graph - palettegen feeds
+    # paletteuse through a labelled link - which is why the whole recipe is one
+    # filter entry rather than two steps.
+    - id: quality
+      prompt: Colour quality
+      hint: A palette built from the whole clip is what stops the colours flickering.
+      type: choice
+      choices:
+        - label: Balanced
+          hint: One palette for the clip, 256 colours. The usual answer.
+          value: balanced
+          filters: ["split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"]
+          requires_filter: palettegen
+          default: true
+        - label: Best (slower)
+          hint: A palette per scene, dithered. The largest and cleanest result.
+          value: best
+          filters: ["split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a"]
+          requires_filter: palettegen
+        - label: Smallest file
+          hint: 128 colours with an ordered dither. Visible banding, much smaller.
+          value: small
+          filters: ["split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5"]
+          requires_filter: palettegen
+
+    # plan.md §5.7 asks for an optional time range. It is a confirm plus a range
+    # rather than an optional range, because a time_range with nothing in it is a
+    # question the user must answer before anything can be built.
+    - id: clip
+      prompt: Limit the length?
+      hint: A GIF of a whole video is enormous. A few seconds is usually plenty.
+      type: confirm
+      default: "no"
+
+    - id: range
+      prompt: Which part of the clip?
+      hint: "HH:MM:SS or plain seconds."
+      type: time_range
+      when: { answer_is: { clip: yes } }
+      input_template: ["-ss", "{start}"]
+      template: ["-t", "{duration}"]

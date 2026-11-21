@@ -427,6 +427,26 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			out:       "%04d.png",
 			wantFiles: 2, // the sample is two seconds long
 		},
+		{
+			name:  "gif: a palette animation with no audio stream",
+			task:  "gif",
+			input: "av.mp4",
+			out:   "gif",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "gif")
+				noStream(t, got, ffmpeg.StreamAudio)
+			},
+		},
+		{
+			name:    "gif: a time range limits the length",
+			task:    "gif",
+			answers: map[string]string{"clip": "yes", "range": "00:00:00.500,00:00:01.500"},
+			input:   "av.mp4",
+			out:     "gif",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantDurationNear(t, got, time.Second, 300*time.Millisecond)
+			},
+		},
 	}
 
 	for _, tc := range tests {

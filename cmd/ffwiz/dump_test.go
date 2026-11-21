@@ -86,6 +86,33 @@ func TestParseAnswers(t *testing.T) {
 	}
 }
 
+// TestAddAnswers: a time_range answer is "start,end", which the comma-separated
+// --answers flag cannot carry, so --answer takes one pair verbatim.
+func TestAddAnswers(t *testing.T) {
+	answers := map[string]string{}
+	if err := addAnswers(answers, []string{"range=00:00:00.500,00:00:01.500", "mode=fast"}); err != nil {
+		t.Fatalf("addAnswers: %v", err)
+	}
+	if got := answers["range"]; got != "00:00:00.500,00:00:01.500" {
+		t.Errorf("range = %q, want the whole value including the comma", got)
+	}
+	if got := answers["mode"]; got != "fast" {
+		t.Errorf("mode = %q, want fast", got)
+	}
+
+	// --answer is merged on top of --answers, so it can correct one.
+	if err := addAnswers(answers, []string{"mode=slow"}); err != nil {
+		t.Fatalf("addAnswers: %v", err)
+	}
+	if got := answers["mode"]; got != "slow" {
+		t.Errorf("mode = %q, want the later value", got)
+	}
+
+	if err := addAnswers(answers, []string{"nope"}); err == nil {
+		t.Error("addAnswers accepted an entry without an equals sign")
+	}
+}
+
 // noProbeTools has no ffprobe, so the dump does not probe. Combined with
 // IgnoreCapabilities it makes runDump testable without ffmpeg installed.
 var noProbeTools = ffmpeg.Tools{FFmpeg: "/nonexistent/ffmpeg"}

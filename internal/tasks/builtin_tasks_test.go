@@ -42,7 +42,7 @@ func TestCatalogueCoversThePlannedTasks(t *testing.T) {
 	}
 	for _, id := range []string{
 		"convert_video", "compress_video", "extract_audio", "trim", "resize",
-		"change_speed", "strip_metadata", "extract_frames",
+		"change_speed", "strip_metadata", "extract_frames", "gif",
 	} {
 		if !have[id] {
 			t.Errorf("%s is missing from the catalogue (plan.md §5)", id)
@@ -338,6 +338,58 @@ func TestStripMetadataCommands(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := buildTask(t, set, "strip_metadata", videoWithAudio(), tc.answers)
+			if got := cmd.String(); got != tc.want {
+				t.Errorf("command =\n  %s\nwant\n  %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// The palette recipe each GIF quality contributes. They are written out in the
+// tests rather than imported, so a change to the YAML has to be seen here.
+const (
+	gifBalanced = "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+	gifBest     = "split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a"
+	gifSmall    = "split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5"
+)
+
+func TestGIFCommands(t *testing.T) {
+	set := loadBuiltin(t)
+	tests := []struct {
+		name    string
+		answers map[string]string
+		want    string
+	}{
+		{
+			// The frame rate, the scale and the palette are three answers that
+			// merge into one -vf chain in step order (plan.md §5.7, D37).
+			name: "defaults to 10 fps at 320 px with a palette built from the clip",
+			want: "ffmpeg -n -i av.mp4 -vf 'fps=10,scale=320:-1:flags=lanczos," + gifBalanced + "' av_gif.gif",
+		},
+		{
+			name:    "a chosen width and palette",
+			answers: map[string]string{"width": "480", "quality": "best"},
+			want:    "ffmpeg -n -i av.mp4 -vf 'fps=10,scale=480:-1:flags=lanczos," + gifBest + "' av_gif.gif",
+		},
+		{
+			// The seek is an input option and the length an output one, so
+			// nothing is decoded before the seek point (DECISIONS D6, D19).
+			name:    "a time range seeks before the input and limits the length after it",
+			answers: map[string]string{"clip": "yes", "range": "00:00:00.500,00:00:01.500", "width": "640", "fps": "15", "quality": "best"},
+			want:    "ffmpeg -n -ss 00:00:00.500 -i av.mp4 -vf 'fps=15,scale=640:-1:flags=lanczos," + gifBest + "' -t 00:00:01.000 av_gif.gif",
+		},
+		{
+			// A GIF is written by the gif muxer, which carries no audio; the
+			// answer for "keep the size" still has to keep the sides even.
+			name:    "the original size is only rounded to even sides",
+			answers: map[string]string{"width": "0", "quality": "small"},
+			want:    "ffmpeg -n -i av.mp4 -vf 'fps=10,scale=trunc(iw/2)*2:trunc(ih/2)*2," + gifSmall + "' av_gif.gif",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := buildTask(t, set, "gif", videoWithAudio(), tc.answers)
 			if got := cmd.String(); got != tc.want {
 				t.Errorf("command =\n  %s\nwant\n  %s", got, tc.want)
 			}
