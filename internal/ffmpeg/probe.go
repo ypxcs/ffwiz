@@ -174,7 +174,7 @@ func ProbeWithTimeout(ctx context.Context, ffprobePath, path string, timeout tim
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
-		guardPath(path),
+		GuardPath(path),
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

@@ -258,8 +258,8 @@ func TestGuardPath(t *testing.T) {
 		{"media/-dash.mp4", "media/-dash.mp4"},
 	}
 	for _, tc := range tests {
-		if got := guardPath(tc.in); got != tc.want {
-			t.Errorf("guardPath(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := GuardPath(tc.in); got != tc.want {
+			t.Errorf("GuardPath(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -325,5 +325,29 @@ func TestScript(t *testing.T) {
 	want := "#!/bin/sh\nset -e\n\nffmpeg -n -i in.mp4 -c copy out.mp4\n"
 	if got := cmd.Script(); got != want {
 		t.Errorf("Script() = %q, want %q", got, want)
+	}
+}
+
+// TestScriptNotesTheFilesItReads: a command built around a file ffwiz writes -
+// the concatenation list - is not self-contained, and the directory it lives in
+// is deleted when ffwiz exits (DECISIONS D10), so the script has to say so
+// rather than fail later with "No such file or directory".
+func TestScriptNotesTheFilesItReads(t *testing.T) {
+	cmd := mustBuild(t, Request{
+		Inputs:    []InputSpec{{Path: "list.txt", Args: []string{"-f", "concat", "-safe", "0"}}},
+		Output:    "out.mp4",
+		Artifacts: []Artifact{{Path: "/tmp/ffwiz-x/concat-abc123.txt", Content: "file 'a.mp4'\n"}},
+	})
+
+	script := cmd.Script()
+	for _, want := range []string{"#!/bin/sh", "set -e", "/tmp/ffwiz-x/concat-abc123.txt"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script does not mention %q:\n%s", want, script)
+		}
+	}
+	// The comment stays a comment: the command itself has to be the last line,
+	// or `set -e` would not cover it.
+	if !strings.HasSuffix(script, "out.mp4\n") {
+		t.Errorf("the command is not the end of the script:\n%s", script)
 	}
 }

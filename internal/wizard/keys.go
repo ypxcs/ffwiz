@@ -40,6 +40,15 @@ type bindings struct {
 	Delete key.Binding
 	// Reveal shows the output in the desktop's file manager.
 	Reveal key.Binding
+	// Edit opens the command for hand editing on the review screen, and
+	// Apply accepts what was typed in it (plan.md §6.6).
+	Edit  key.Binding
+	Apply key.Binding
+	// Script writes the command out as a runnable shell script.
+	Script key.Binding
+	// Revert drops a hand-edited command and goes back to the one the wizard
+	// built, so an edit is never a one-way door (plan.md §6.6, DECISIONS D44).
+	Revert key.Binding
 }
 
 // newBindings returns a fresh set. Bindings are keyed by name because the
@@ -104,7 +113,10 @@ func newBindings() bindings {
 		),
 		Copy: key.NewBinding(
 			key.WithKeys("c"),
-			key.WithHelp("c", "copy command"),
+			// "copy" rather than "copy command": the review screen's short help
+			// line carries six bindings, and one word keeps it inside 80
+			// columns (plan.md §6).
+			key.WithHelp("c", "copy"),
 		),
 		Run: key.NewBinding(
 			key.WithKeys("r"),
@@ -125,6 +137,22 @@ func newBindings() bindings {
 		Reveal: key.NewBinding(
 			key.WithKeys("o"),
 			key.WithHelp("o", "open folder"),
+		),
+		Edit: key.NewBinding(
+			key.WithKeys("x"),
+			key.WithHelp("x", "edit command"),
+		),
+		Apply: key.NewBinding(
+			key.WithKeys("ctrl+s"),
+			key.WithHelp("ctrl+s", "use this command"),
+		),
+		Script: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "save as script"),
+		),
+		Revert: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "undo the edit"),
 		),
 	}
 }

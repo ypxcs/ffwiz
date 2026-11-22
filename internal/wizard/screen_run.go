@@ -47,20 +47,28 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	preview, _, err := m.engine.Preview(m.answers, m.buildOptions())
-	if err != nil {
-		m.notice, m.noticeIsError = "cannot build the command: "+err.Error(), true
-		return m, nil
-	}
-	if len(preview.Pending) > 0 {
-		m.notice, m.noticeIsError = "some answers are missing: "+strings.Join(preview.Pending, ", "), true
-		return m, nil
-	}
+	var command *ffmpeg.Command
+	if m.edited != nil {
+		// A hand-edited command is already an argument slice: there is nothing
+		// to resolve and nothing that can still be pending (DECISIONS D44).
+		command = ffmpeg.RawCommand(m.edited)
+	} else {
+		preview, _, err := m.engine.Preview(m.answers, m.buildOptions())
+		if err != nil {
+			m.notice, m.noticeIsError = "cannot build the command: "+err.Error(), true
+			return m, nil
+		}
+		if len(preview.Pending) > 0 {
+			m.notice, m.noticeIsError = "some answers are missing: "+strings.Join(preview.Pending, ", "), true
+			return m, nil
+		}
 
-	command, _, err := m.engine.Build(m.answers, m.buildOptions())
-	if err != nil {
-		m.notice, m.noticeIsError = "cannot build the command: "+err.Error(), true
-		return m, nil
+		built, _, err := m.engine.Build(m.answers, m.buildOptions())
+		if err != nil {
+			m.notice, m.noticeIsError = "cannot build the command: "+err.Error(), true
+			return m, nil
+		}
+		command = built
 	}
 
 	// The output screen checked this before the review screen existed; a file
@@ -360,7 +368,7 @@ func (m Model) logPane(width int) string {
 	}
 	// The last lines are the ones that matter, and the pane has a fixed number
 	// of rows to give them.
-	rows := clamp(bodyHeightFor(m.height, m.help.ShowAll)-6, 2, 8)
+	rows := clamp(m.bodyHeight()-6, 2, 8)
 	lines := m.logs
 	if len(lines) > rows {
 		lines = lines[len(lines)-rows:]

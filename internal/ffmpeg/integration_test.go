@@ -125,7 +125,7 @@ func TestIntegrationProbeAwkwardFilenames(t *testing.T) {
 	}
 }
 
-// TestIntegrationProbeLeadingDashFilename proves guardPath works end to end:
+// TestIntegrationProbeLeadingDashFilename proves GuardPath works end to end:
 // with the working directory inside the media folder, a bare "-leading-dash.mp4"
 // is passed to ffprobe with a "./" prefix so it is not parsed as an option.
 func TestIntegrationProbeLeadingDashFilename(t *testing.T) {
@@ -510,5 +510,53 @@ func TestIntegrationRunReportsRealProgress(t *testing.T) {
 	}
 	if !info.Has(StreamVideo) {
 		t.Error("the output has no video stream")
+	}
+}
+
+// TestIntegrationScriptIsRunnable proves the text Save as script writes is a
+// program, not just a plausible-looking file (plan.md §6.6). The file is
+// executed directly, so the shebang and the executable bit are both exercised,
+// and `set -e` means a failing ffmpeg stops it with a non-zero status - which is
+// what makes a saved script safe to call from another script.
+func TestIntegrationScriptIsRunnable(t *testing.T) {
+	tools := requireTools(t)
+	input := requireSample(t, "av.mp4")
+	dir := t.TempDir()
+	output := filepath.Join(dir, "out.mp4")
+
+	cmd, err := Build(Request{
+		Inputs:     []InputSpec{{Path: input}},
+		Output:     output,
+		OutputArgs: []string{"-c:v", "libx264", "-crf", "28", "-c:a", "copy"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// The script names the bare program, so it has to be able to find ffmpeg.
+	// The PATH line goes in as the script's own second statement, which is where
+	// a user with ffmpeg somewhere unusual would put it.
+	lines := strings.SplitN(cmd.Script(), "\n", 3) // shebang, set -e, the rest
+	if len(lines) < 3 {
+		t.Fatalf("the script is not the expected three parts:\n%s", cmd.Script())
+	}
+	body := lines[0] + "\nPATH=" + filepath.Dir(tools.FFmpeg) + ":$PATH\n" + lines[1] + "\n" + lines[2]
+
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	run := exec.CommandContext(ctx, script)
+	var out strings.Builder
+	run.Stderr = &out
+	run.Stdout = &out
+	if err := run.Run(); err != nil {
+		t.Fatalf("running the saved script failed: %v\n%s\n--- script ---\n%s", err, out.String(), body)
+	}
+	if info, err := os.Stat(output); err != nil || info.Size() == 0 {
+		t.Fatalf("the script wrote no output: %v", err)
 	}
 }

@@ -130,7 +130,14 @@ func wrapTokens(tokens []token, width int) []string {
 
 // liveCommand previews the command for the current answers. A nil command with
 // a nil error means "there is nothing to preview yet".
+//
+// A hand-edited command replaces the preview entirely: the wizard is no longer
+// resolving anything, so there are no pending answers and no error to report
+// (plan.md §6.6, DECISIONS D44).
 func (m Model) liveCommand() (*ffmpeg.Command, []string, error) {
+	if m.edited != nil {
+		return ffmpeg.RawCommand(m.edited), nil, nil
+	}
 	if m.engine == nil || m.input == "" || m.width == 0 {
 		return nil, nil, nil
 	}

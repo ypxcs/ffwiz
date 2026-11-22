@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -93,6 +94,10 @@ var ErrSameFile = errors.New("output path is the same as an input file")
 // Command is a validated, ordered ffmpeg invocation.
 type Command struct {
 	req Request
+	// raw, when non-nil, are arguments the user edited by hand. A raw command
+	// carries no Request: there is nothing left to resolve, only to run
+	// (plan.md §6.6, DECISIONS D44).
+	raw []string
 }
 
 // execOnlyArgs are added to the executed command but hidden from the displayed
@@ -140,6 +145,28 @@ func (c *Command) Args() []string {
 	return args
 }
 
+// RawCommand wraps an argument list the user edited by hand (plan.md §6.6).
+//
+// Nothing is validated, reordered or rewritten: taking the command over is the
+// whole point of the edit screen, so re-imposing ffwiz's own ordering rules
+// there would silently undo the edit. The only arguments still added are the
+// execution-only ones that make the process watchable and steerable
+// (-progress and friends), and they stay hidden from the display and the copied
+// text exactly as they do for a generated command (DECISIONS D5).
+//
+// The caller is responsible for what is in the slice. In particular the
+// overwrite policy (-n or -y) is the user's own, since a hand-edited -y cannot
+// be distinguished from a mistake - the review screen says so plainly.
+func RawCommand(args []string) *Command {
+	raw := make([]string, len(args))
+	copy(raw, args)
+	return &Command{raw: raw}
+}
+
+// Edited reports whether the command was edited by hand rather than built from
+// the wizard's answers.
+func (c *Command) Edited() bool { return c.raw != nil }
+
 // DisplayArgs returns the arguments as the user should see them: the same order
 // as Args, without the execution-only flags, and with the program name omitted.
 func (c *Command) DisplayArgs() []string {
@@ -158,8 +185,24 @@ func (c *Command) String() string {
 }
 
 // Script renders the command as a runnable shell script (plan.md §6.6).
+//
+// A command that reads a file ffwiz writes - today the concatenation list - is
+// not self-contained, and those files live in a directory that is deleted when
+// ffwiz exits (DECISIONS D10), so the script says so rather than failing later
+// with "No such file or directory".
 func (c *Command) Script() string {
-	return "#!/bin/sh\nset -e\n\n" + c.String() + "\n"
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\nset -e\n")
+	if len(c.req.Artifacts) > 0 {
+		b.WriteString("#\n# This command reads files that ffwiz wrote for this run, in a\n" +
+			"# directory that is deleted when ffwiz exits. Put copies beside this\n" +
+			"# script, or run the command from ffwiz instead:\n")
+		for _, a := range c.req.Artifacts {
+			b.WriteString("#   " + a.Path + "\n")
+		}
+	}
+	b.WriteString("\n" + c.String() + "\n")
+	return b.String()
 }
 
 // ExpectedDuration reports how long the output is expected to be, or 0 when
@@ -169,7 +212,14 @@ func (c *Command) ExpectedDuration() time.Duration {
 }
 
 // Overwrites reports whether the command may clobber an existing file.
-func (c *Command) Overwrites() bool { return c.req.Overwrite }
+func (c *Command) Overwrites() bool {
+	if c.raw != nil {
+		// A hand-edited command carries its own policy, and the only thing
+		// worth reporting is the destructive one.
+		return slices.Contains(c.raw, "-y")
+	}
+	return c.req.Overwrite
+}
 
 // Artifacts are the files ffwiz must write before this command can run.
 func (c *Command) Artifacts() []Artifact { return c.req.Artifacts }
@@ -183,6 +233,11 @@ func (c *Command) Artifacts() []Artifact { return c.req.Artifacts }
 // Input options must precede their -i. Filters and maps must follow the inputs.
 // The output path must be last.
 func (c *Command) commonArgs() []string {
+	// A hand-edited command is emitted exactly as it was typed.
+	if c.raw != nil {
+		return append([]string(nil), c.raw...)
+	}
+
 	var args []string
 
 	// ffwiz never overwrites silently: -n is the default, -y only after an
@@ -195,7 +250,7 @@ func (c *Command) commonArgs() []string {
 
 	for _, in := range c.req.Inputs {
 		args = append(args, in.Args...)
-		args = append(args, "-i", guardPath(in.Path))
+		args = append(args, "-i", GuardPath(in.Path))
 	}
 
 	if graph := joinGraphs(c.req.FilterComplex); graph != "" {
@@ -215,7 +270,7 @@ func (c *Command) commonArgs() []string {
 	}
 
 	args = append(args, c.req.OutputArgs...)
-	args = append(args, guardPath(c.req.Output))
+	args = append(args, GuardPath(c.req.Output))
 	return args
 }
 
@@ -274,13 +329,17 @@ func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// guardPath defuses paths that ffmpeg would mistake for an option.
+// GuardPath defuses paths that ffmpeg would mistake for an option.
 //
 // A filename beginning with "-" is parsed as a flag no matter how it is quoted,
 // because the shell strips the quotes before ffmpeg sees it. Prefixing "./"
 // keeps the same file while making it unambiguous (plan.md §8). Absolute paths
 // cannot start with "-" so they are returned unchanged.
-func guardPath(p string) string {
+//
+// It is exported because the review screen's edit mode has to recognise the
+// destination in text the user typed, which is spelled the way the builder will
+// spell it (plan.md §6.6).
+func GuardPath(p string) string {
 	if strings.HasPrefix(p, "-") && !filepath.IsAbs(p) {
 		return "./" + p
 	}

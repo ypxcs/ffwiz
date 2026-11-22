@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -35,6 +36,8 @@ const (
 	ScreenOutput
 	// ScreenReview shows the finished command.
 	ScreenReview
+	// ScreenEdit is the review screen's hand-editing mode (plan.md §6.6).
+	ScreenEdit
 	// ScreenRun shows the encode in progress.
 	ScreenRun
 	// ScreenDone reports how the run ended.
@@ -194,6 +197,15 @@ type Model struct {
 
 	copied bool
 
+	// The review screen's edit mode (plan.md §6.6). edited holds the arguments
+	// the user produced by hand, or nil while the wizard still owns the
+	// command; editArea is the text area they type in (DECISIONS D44).
+	edited   []string
+	editArea textarea.Model
+	// editErr is the message from the last refused edit, shown under the text
+	// area rather than in the one-line notice, because the cursor is there.
+	editErr string
+
 	// The run screen. handle is nil until ffmpeg has been started; progress,
 	// logs and elapsed are what it has reported so far.
 	runner    Runner
@@ -292,6 +304,10 @@ func New(deps Deps) Model {
 	m.rangeEnd = textinput.New()
 	m.customInput = textinput.New()
 	m.concatFilter = textinput.New()
+	m.editArea = textarea.New()
+	// The command is one long line, and ffwiz writes it out in full: wrapping
+	// would put a line break in the middle of a path where there is none.
+	m.editArea.ShowLineNumbers = false
 	m.toggles = map[string]bool{}
 	m.concatInfo = map[string]*ffmpeg.MediaInfo{}
 	m.concatProbing = map[string]bool{}
@@ -346,6 +362,11 @@ func (m *Model) applyStyles() {
 	m.rangeEnd.SetStyles(textinput.DefaultStyles(isDark))
 	m.customInput.SetStyles(textinput.DefaultStyles(isDark))
 	m.concatFilter.SetStyles(textinput.DefaultStyles(isDark))
+	m.editArea.SetStyles(textarea.DefaultStyles(isDark))
+	// The default prompt is a thick left border, which in this layout reads as
+	// a dialog to be dismissed rather than a field being typed into; every
+	// other pane here is delimited by a rule. The editor gets an indent instead.
+	m.editArea.Prompt = "  "
 }
 
 // Init starts the wizard: it asks the terminal about its background and either
@@ -479,6 +500,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateOutput(msg, keyMsg, isKey)
 	case ScreenReview:
 		return m.updateReview(keyMsg, isKey)
+	case ScreenEdit:
+		return m.updateEdit(msg, keyMsg, isKey)
 	case ScreenDone:
 		return m.updateDone(msg, keyMsg, isKey)
 	}
@@ -490,6 +513,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // typing "e" would go back (DECISIONS D14).
 func (m Model) textEntryFocused() bool {
 	switch m.screen {
+	case ScreenEdit:
+		// The text area owns every letter (plan.md §6.6).
+		return true
 	case ScreenOutput:
 		// The conflict prompt is a menu, not the name field: with it open, `q`
 		// must quit and `e` must not be swallowed by the input.
@@ -540,7 +566,7 @@ func (m *Model) resize() {
 	// The picker has to be sized explicitly: AutoHeight is off so that the
 	// wizard controls the layout (a picker that resizes itself fights the
 	// preview pane).
-	m.picker.SetHeight(bodyHeightFor(m.height, m.help.ShowAll))
+	m.picker.SetHeight(m.bodyHeight())
 	width := visibleWidth(m.width)
 	m.stepInput.SetWidth(width - 4)
 	m.outputInput.SetWidth(width - 4)
@@ -548,6 +574,10 @@ func (m *Model) resize() {
 	m.rangeEnd.SetWidth(width - 4)
 	m.customInput.SetWidth(width - 4)
 	m.concatFilter.SetWidth(width - 4)
+	m.editArea.SetWidth(width - 4)
+	// The text area takes the main pane minus its heading, its explanation and
+	// the error line, which is why it is not simply the body height.
+	m.editArea.SetHeight(max(m.bodyHeight()-5, 3))
 	m.help.SetWidth(m.width)
 	// The bar leaves room for the percentage that follows it and for the indent
 	// the run screen gives its content.
@@ -578,10 +608,23 @@ func bodyHeightFor(height int, fullHelp bool) int {
 // commandLines is how many lines the command preview gets.
 const commandLines = 3
 
+// bodyHeight is the height of the main pane on the current screen.
+//
+// The edit screen takes the command pane's rows for itself: there the command
+// *is* the main pane, so a second copy of it underneath would waste the four
+// lines that the text area needs most at 24 rows (plan.md §6.6).
+func (m Model) bodyHeight() int {
+	h := bodyHeightFor(m.height, m.help.ShowAll)
+	if m.screen == ScreenEdit {
+		h += commandLines + 2 // the pane's rows and the rules around it
+	}
+	return h
+}
+
 // View renders the whole screen.
 func (m Model) View() tea.View {
 	width := visibleWidth(m.width)
-	bodyHeight := bodyHeightFor(m.height, m.help.ShowAll)
+	bodyHeight := m.bodyHeight()
 
 	var b strings.Builder
 	b.WriteString(m.header(width))
@@ -594,10 +637,12 @@ func (m Model) View() tea.View {
 	b.WriteString("\n")
 	b.WriteString(fitLines(m.hintLine(width), 1))
 	b.WriteString("\n")
-	b.WriteString(m.styles.rule(width))
-	b.WriteString("\n")
-	b.WriteString(fitLines(m.commandPane(width), commandLines+1))
-	b.WriteString("\n")
+	if m.screen != ScreenEdit {
+		b.WriteString(m.styles.rule(width))
+		b.WriteString("\n")
+		b.WriteString(fitLines(m.commandPane(width), commandLines+1))
+		b.WriteString("\n")
+	}
 	b.WriteString(m.styles.rule(width))
 	b.WriteString("\n")
 	b.WriteString(m.help.View(m.helpBindings()))
@@ -625,6 +670,8 @@ func (m Model) body(width int) string {
 		return m.stepBody(width)
 	case ScreenOutput:
 		return m.outputBody(width)
+	case ScreenEdit:
+		return m.editBody(width)
 	case ScreenRun:
 		return m.runBody(width)
 	case ScreenDone:
@@ -645,6 +692,8 @@ func (m Model) hint() string {
 		return m.hintStep()
 	case ScreenOutput:
 		return m.hintOutput()
+	case ScreenEdit:
+		return m.hintEdit()
 	case ScreenRun:
 		return m.hintRun()
 	case ScreenDone:
@@ -669,9 +718,11 @@ func (m Model) header(width int) string {
 	parts := make([]string, 0, len(crumbs))
 	for _, c := range crumbs {
 		active := m.screen == c.screen ||
-			// The output screen is still part of the options phase, and the
-			// done screen is still part of the run.
+			// The output screen is still part of the options phase, the edit
+			// screen still part of the review, and the done screen part of the
+			// run.
 			(c.screen == ScreenStep && m.screen == ScreenOutput) ||
+			(c.screen == ScreenReview && m.screen == ScreenEdit) ||
 			(c.screen == ScreenRun && m.screen == ScreenDone)
 		style := m.styles.Breadcrumb
 		if active {
@@ -761,6 +812,14 @@ func (m Model) helpBindings() helpView {
 				{k.Quit, k.Help},
 			},
 		}
+	case ScreenEdit:
+		return helpView{
+			short: []key.Binding{k.Apply, k.BackEsc, k.Quit},
+			full: [][]key.Binding{
+				{k.Apply, k.BackEsc, k.Quit},
+				{k.Help},
+			},
+		}
 	case ScreenRun:
 		return helpView{
 			short: []key.Binding{k.Cancel, k.Log},
@@ -789,11 +848,17 @@ func (m Model) helpBindings() helpView {
 			},
 		}
 	default:
-		bindings := []key.Binding{k.Run, k.Copy, k.Back, k.Quit}
+		bindings := []key.Binding{k.Run, k.Copy, k.Edit, k.Script, k.Back, k.Quit}
+		if m.edited != nil {
+			// An edited command is the user's own, so the offer to undo it is
+			// part of the same line (DECISIONS D44).
+			bindings = []key.Binding{k.Run, k.Copy, k.Revert, k.Edit, k.Back, k.Quit}
+		}
 		return helpView{
 			short: bindings,
 			full: [][]key.Binding{
 				{k.Run, k.Copy},
+				{k.Edit, k.Script, k.Revert},
 				{k.Back, k.Quit, k.Help},
 			},
 		}

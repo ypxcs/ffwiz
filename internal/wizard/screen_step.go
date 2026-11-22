@@ -28,6 +28,9 @@ func (m *Model) startTask(id string) {
 	m.choiceIdx = 0
 	m.outputPath = ""
 	m.copied = false
+	// An edited command belongs to the task that produced it (DECISIONS D44).
+	m.edited = nil
+	m.editErr = ""
 	// The clip browser belongs to the task, so a new task starts with an empty
 	// list even if the previous one also joined clips.
 	m.concatPicked = nil
@@ -725,6 +728,10 @@ func (m Model) stepAdvance() (tea.Model, tea.Cmd) {
 // logic.
 func (m Model) recordAndAdvance(stepID, value string) (tea.Model, tea.Cmd) {
 	m.answers[stepID] = value
+	// Changing an answer takes the command back: it was built from the answers,
+	// and an edited command that ignored a later change would be a trap
+	// (DECISIONS D44).
+	m.edited = nil
 	m.notice, m.noticeIsError = "", false
 	m.stepIndex++
 
