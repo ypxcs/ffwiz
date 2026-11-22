@@ -79,7 +79,8 @@ func runnable(t *testing.T) (*session, *fakeRunner) {
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
 	s.press("enter") // to the task list
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter") // the four steps, then the output screen
+	s.acceptDefaults() // every question, then the output screen
+	s.press("enter")   // accept the name
 	if s.model.screen != ScreenReview {
 		t.Fatalf("screen = %v, want the review screen", s.model.screen)
 	}

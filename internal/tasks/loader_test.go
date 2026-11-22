@@ -23,6 +23,13 @@ const minimalYAML = `
         - { label: Small, value: small, args: ["-crf", "28"] }
 `
 
+// presetYAML is a task with one choice step and one preset, so a preset
+// validation case only has to write the answers it is about.
+func presetYAML(answers string) string {
+	return "- id: x\n  label: X\n  presets:\n    - { id: p, label: P, answers: " + answers + " }\n" +
+		"  steps:\n    - { id: quality, prompt: Quality, type: choice, choices: [{ label: L, value: v, default: true }] }\n"
+}
+
 func loadWith(t *testing.T, builtin, user string) (*Set, error) {
 	t.Helper()
 	fsys := fstest.MapFS{}
@@ -408,6 +415,38 @@ func TestLoadReportsBadYAML(t *testing.T) {
 			name:    "a validate block on a concat step",
 			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, validate: { regex: \"^a\" } }\n",
 			want:    "only meaningful for steps whose answer is a value",
+		},
+		{
+			// A preset is offered *instead of* reading the questions, so an
+			// answer that matches nothing would not be a visible typo.
+			name:    "a preset answering an unknown step",
+			builtin: presetYAML(`{ nope: v }`),
+			want:    "answers unknown step",
+		},
+		{
+			name:    "a preset answering a value the step does not offer",
+			builtin: presetYAML(`{ quality: nope }`),
+			want:    "is not one of that step's choices",
+		},
+		{
+			name:    "a preset with no answers",
+			builtin: presetYAML(`{}`),
+			want:    "has no answers",
+		},
+		{
+			name:    "two presets with the same id",
+			builtin: "- id: x\n  label: X\n  presets:\n    - { id: p, label: One, answers: { quality: v } }\n    - { id: p, label: Two, answers: { quality: v } }\n  steps:\n    - { id: quality, prompt: Quality, type: choice, choices: [{ label: L, value: v, default: true }] }\n",
+			want:    "duplicate preset id",
+		},
+		{
+			name:    "a preset without a label",
+			builtin: "- id: x\n  label: X\n  presets:\n    - { id: p, answers: { quality: v } }\n  steps:\n    - { id: quality, prompt: Quality, type: choice, choices: [{ label: L, value: v, default: true }] }\n",
+			want:    "missing a label",
+		},
+		{
+			name:    "a preset with a malformed time range",
+			builtin: "- id: x\n  label: X\n  presets:\n    - { id: p, label: P, answers: { range: \"nonsense\" } }\n  steps:\n    - { id: range, prompt: Range, type: time_range }\n",
+			want:    "not a start,end pair",
 		},
 	}
 

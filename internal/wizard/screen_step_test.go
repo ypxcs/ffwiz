@@ -425,7 +425,7 @@ func TestBurnSubtitlesIsRefusedWithoutLibass(t *testing.T) {
 		t.Errorf("reason = %q, want it to name the missing filter", entry.reason)
 	}
 
-	s.startTask("burn_subtitles")
+	s.tryStartTask("burn_subtitles")
 	if s.model.screen == ScreenStep {
 		t.Error("the wizard started a task that cannot run")
 	}

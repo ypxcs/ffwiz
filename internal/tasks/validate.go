@@ -3,6 +3,7 @@ package tasks
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -69,6 +70,95 @@ func (t *Task) validate() []error {
 		errs = append(errs, t.validateStep(i, stepIDs)...)
 	}
 	errs = append(errs, t.validateFilterGraphs()...)
+	errs = append(errs, t.validatePresets()...)
+	return errs
+}
+
+// validatePresets checks the named answer sets of plan.md §5.
+//
+// A preset deserves this more than a default does. It is what a user reaches for
+// *instead of* reading the questions, so an answer that matches nothing the task
+// asks would not be a visible typo - it would be a command built from a value no
+// question ever offered, discovered at run time.
+func (t *Task) validatePresets() []error {
+	var errs []error
+	at := func(id string, format string, args ...any) error {
+		return fmt.Errorf("%s: task %s: preset %s: %s", t.Source, t.ID, id, fmt.Sprintf(format, args...))
+	}
+	byStepID := make(map[string]Step, len(t.Steps))
+	for _, step := range t.Steps {
+		byStepID[step.ID] = step
+	}
+
+	seen := map[string]bool{}
+	for i, p := range t.Presets {
+		if p.ID == "" {
+			errs = append(errs, at(fmt.Sprintf("#%d", i), "missing an id"))
+			continue
+		}
+		if seen[p.ID] {
+			errs = append(errs, at(p.ID, "duplicate preset id"))
+			continue
+		}
+		seen[p.ID] = true
+
+		if p.Label == "" {
+			errs = append(errs, at(p.ID, "missing a label"))
+		}
+		if len(p.Answers) == 0 {
+			// Not dangerous, but it would be a row that does nothing.
+			errs = append(errs, at(p.ID, "has no answers, so it would leave every step as the task already has it"))
+		}
+
+		// Sorted so a task with several mistakes reports them in a stable order,
+		// which is what makes the error readable in a terminal and in a test.
+		for _, stepID := range slices.Sorted(maps.Keys(p.Answers)) {
+			step, ok := byStepID[stepID]
+			if !ok {
+				errs = append(errs, at(p.ID, "answers unknown step %q", stepID))
+				continue
+			}
+			value := p.Answers[stepID]
+			switch step.Type {
+			case StepChoice:
+				if !findChoiceOK(step.Choices, value) {
+					errs = append(errs, at(p.ID, "%s=%q is not one of that step's choices", stepID, value))
+				}
+			case StepMulti:
+				for _, v := range strings.Split(value, ",") {
+					v = strings.TrimSpace(v)
+					if v != "" && !findChoiceOK(step.Choices, v) {
+						errs = append(errs, at(p.ID, "%s=%q includes %q, which is not one of that step's choices", stepID, value, v))
+					}
+				}
+			case StepResolution:
+				// A typed height is a legal answer for a step that offers a
+				// custom field, so it is checked the same way the wizard checks
+				// it (see selectResolution).
+				if !findChoiceOK(step.Choices, value) && !(step.Custom && step.ValidateValue(value) == nil) {
+					errs = append(errs, at(p.ID, "%s=%q is neither a preset of that step nor a value it accepts", stepID, value))
+				}
+			case StepTimeRange:
+				if _, err := ParseRange(value); err != nil {
+					errs = append(errs, at(p.ID, "%s=%q is not a start,end pair: %v", stepID, value, err))
+				}
+			case StepInput:
+				if err := step.ValidateValue(value); err != nil {
+					errs = append(errs, at(p.ID, "%s=%q does not pass that step's validation: %v", stepID, value, err))
+				}
+			case StepConfirm:
+				// Any spelling normaliseYesNo understands will do; the engine
+				// reads the answer through it.
+			case StepConcat:
+				// A concat preset names files, which is only meaningful on the
+				// machine that has them. The step's own rule decides whether the
+				// list is usable.
+				if err := step.CheckConcatAnswer(value); err != nil {
+					errs = append(errs, at(p.ID, "%s is not a usable clip list: %v", stepID, err))
+				}
+			}
+		}
+	}
 	return errs
 }
 

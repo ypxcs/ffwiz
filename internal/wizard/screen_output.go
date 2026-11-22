@@ -19,7 +19,19 @@ import (
 
 // enterOutput moves from the last question to the output path, prefilled with
 // the default name from plan.md §6.5.
+//
+// A notice from the previous screen is dropped: the output screen's own state is
+// what it has to say. A caller with something to say about arriving here uses
+// enterOutputNow instead.
 func (m Model) enterOutput() (tea.Model, tea.Cmd) {
+	m.notice, m.noticeIsError = "", false
+	return m.enterOutputNow()
+}
+
+// enterOutputNow is the screen change on its own. It is separate so that the
+// preset screen can arrive with a message explaining why it skipped the
+// questions (DECISIONS D45).
+func (m Model) enterOutputNow() (tea.Model, tea.Cmd) {
 	if m.engine == nil {
 		return m, nil
 	}
@@ -38,7 +50,6 @@ func (m Model) enterOutput() (tea.Model, tea.Cmd) {
 	m.outputInput.Focus()
 	m.conflict, m.conflictIdx = false, 0
 	m.overwrite = false
-	m.notice, m.noticeIsError = "", false
 	m.screen = ScreenOutput
 	return m, nil
 }

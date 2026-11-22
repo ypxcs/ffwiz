@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,6 +51,119 @@ func TestCatalogueCoversThePlannedTasks(t *testing.T) {
 			t.Errorf("%s is missing from the catalogue (plan.md §5)", id)
 		}
 	}
+}
+
+// TestBuiltinPresetsProduceTheExpectedCommands pins what each shipped preset does
+// (plan.md §5).
+//
+// A preset is nothing but answers, so the command it produces has to be the one
+// those same answers typed into the steps would produce - and that is what these
+// strings are, spelled out. The test is also the thing that notices when a step's
+// default or arguments change underneath a preset: the preset would otherwise
+// quietly start meaning something else.
+func TestBuiltinPresetsProduceTheExpectedCommands(t *testing.T) {
+	set := loadBuiltin(t)
+	tests := []struct {
+		task   string
+		preset string
+		want   string
+	}{
+		{
+			task:   "convert_video",
+			preset: "web_mp4",
+			want:   "ffmpeg -n -i av.mp4 -c:v libx264 -crf 23 -c:a aac -b:a 192k -movflags +faststart av_convert_video.mp4",
+		},
+		{
+			task:   "convert_video",
+			preset: "whatsapp_mp4",
+			want:   "ffmpeg -n -i av.mp4 -c:v libx264 -crf 28 -c:a aac -b:a 192k av_convert_video.mp4",
+		},
+		{
+			task:   "convert_video",
+			preset: "youtube_mp4",
+			want:   "ffmpeg -n -i av.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 192k av_convert_video.mp4",
+		},
+		{
+			task:   "compress_video",
+			preset: "discord_25mb",
+			want:   "ffmpeg -n -i av.mp4 -c:v libx264 -c:a aac -b:a 128k -b:v 99200k -maxrate 99200k -bufsize 198400k av_compress_video.mp4",
+		},
+		{
+			task:   "compress_video",
+			preset: "small_h265",
+			want:   "ffmpeg -n -i av.mp4 -c:v libx265 -crf 26 -c:a copy av_compress_video.mp4",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.task+"/"+tc.preset, func(t *testing.T) {
+			preset, ok := findPreset(set, tc.task, tc.preset)
+			if !ok {
+				t.Fatalf("%s has no preset %q", tc.task, tc.preset)
+			}
+			if got := buildTask(t, set, tc.task, videoWithAudio(), preset.Answers).String(); got != tc.want {
+				t.Errorf("the preset built\n  %s\nwant\n  %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinPresetsOnlyNameStepsTheyLeaveActive holds the two props a preset
+// stands on.
+//
+// The first is that the step it answers is still on the screen after the preset
+// is applied. A preset answer for a step its own answers switch off is not an
+// error the loader can see - the step id exists and the value is legal - but the
+// answer would be dropped, and the preset would be silent about it.
+//
+// The second is that the engine settles on the value the preset named rather than
+// some conditional default winning the resolution.
+func TestBuiltinPresetsOnlyNameStepsTheyLeaveActive(t *testing.T) {
+	set := loadBuiltin(t)
+	presets := 0
+
+	for _, task := range set.Tasks {
+		for _, preset := range task.Presets {
+			presets++
+			eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps()}
+			res := eng.Resolve(preset.Answers)
+			active := map[string]bool{}
+			for _, step := range res.Active {
+				active[step.ID] = true
+			}
+
+			for _, stepID := range slices.Sorted(maps.Keys(preset.Answers)) {
+				want := preset.Answers[stepID]
+				if !active[stepID] {
+					t.Errorf("%s/%s answers %s, which its own answers leave off the screen",
+						task.ID, preset.ID, stepID)
+					continue
+				}
+				if got := res.Answers[stepID]; got != want {
+					t.Errorf("%s/%s: %s resolves to %q, want %q",
+						task.ID, preset.ID, stepID, got, want)
+				}
+			}
+		}
+	}
+
+	if presets == 0 {
+		t.Fatal("the catalogue ships no presets, so this test proves nothing")
+	}
+}
+
+// findPreset returns a task's preset by id, looking the task up by id too.
+func findPreset(set *Set, taskID, presetID string) (Preset, bool) {
+	task, ok := set.Get(taskID)
+	if !ok {
+		return Preset{}, false
+	}
+	for _, p := range task.Presets {
+		if p.ID == presetID {
+			return p, true
+		}
+	}
+	return Preset{}, false
 }
 
 func TestCompressVideoCommands(t *testing.T) {

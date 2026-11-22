@@ -327,7 +327,8 @@ func TestWizardEditScreenFits(t *testing.T) {
 	next, _ := s.model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	s.model = next.(Model)
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter")
+	s.acceptDefaults()
+	s.press("enter") // the output screen's name
 	s.press("x")
 	if s.model.screen != ScreenEdit {
 		t.Fatalf("screen = %v, want the edit screen", s.model.screen)

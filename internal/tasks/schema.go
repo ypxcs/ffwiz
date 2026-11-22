@@ -51,10 +51,34 @@ type Task struct {
 	// built-in task (DECISIONS D12).
 	Disabled bool   `yaml:"disabled"`
 	Steps    []Step `yaml:"steps"`
+	// Presets are named answer sets offered before the steps, e.g. "Discord
+	// under 25 MB" (plan.md §5).
+	Presets []Preset `yaml:"presets"`
 
 	// Source is the file this task was loaded from, for error messages. It is
 	// not part of the YAML.
 	Source string `yaml:"-"`
+}
+
+// Preset is a named set of answers for one task - plan.md §5's "Presets are task
+// answers prefilled into a task".
+//
+// It carries nothing else on purpose. A preset is not a shortcut past the steps:
+// the steps are still walked (or the wizard's own defaults still applied), so
+// "the user can accept or tweak any step" is the ordinary flow rather than a
+// second one. Choosing a preset is exactly equivalent to typing its answers in
+// by hand, which is also what makes it testable through the same engine call
+// (DECISIONS D45).
+type Preset struct {
+	// ID names the preset for error messages and tests. It is not shown.
+	ID string `yaml:"id"`
+	// Label is what the user picks, e.g. "Web-optimised MP4".
+	Label string `yaml:"label"`
+	// Description is the "why" line shown while the preset is highlighted.
+	Description string `yaml:"description"`
+	// Answers maps a step id to the answer prefilled for it. A step left out
+	// keeps whatever the task itself would have answered.
+	Answers map[string]string `yaml:"answers"`
 }
 
 // Requires gates a whole task on what the input file actually contains.

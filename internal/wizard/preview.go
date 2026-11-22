@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"maps"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -141,9 +142,33 @@ func (m Model) liveCommand() (*ffmpeg.Command, []string, error) {
 	if m.engine == nil || m.input == "" || m.width == 0 {
 		return nil, nil, nil
 	}
-	preview, _, err := m.engine.Preview(m.answers, m.buildOptions())
+	preview, _, err := m.engine.Preview(m.previewAnswers(), m.buildOptions())
 	if err != nil {
 		return nil, nil, err
 	}
 	return preview.Command, preview.Pending, nil
+}
+
+// previewAnswers are the answers the command pane is built from, which is not
+// always what the user has chosen so far.
+//
+// On the preset screen nothing has been chosen yet - the answers are the
+// *consequence* of the row under the cursor - so the pane shows that row's
+// answers. Without this the preview would sit empty above a list of presets,
+// and the one screen whose whole subject is "what would this produce" would be
+// the one screen not saying (plan.md §6, DECISIONS D45).
+func (m Model) previewAnswers() map[string]string {
+	if m.screen != ScreenPreset {
+		return m.answers
+	}
+	preset, ok := m.highlightedPreset()
+	if !ok {
+		// The "no preset" row: the task's own defaults, which is exactly the
+		// empty answer map.
+		return m.answers
+	}
+	merged := make(map[string]string, len(m.answers)+len(preset.Answers))
+	maps.Copy(merged, m.answers)
+	maps.Copy(merged, preset.Answers)
+	return merged
 }

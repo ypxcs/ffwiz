@@ -190,3 +190,54 @@
           hint: Produces a silent video file.
           value: none
           args: ["-an"]
+
+    # plan.md §5 names "Web-optimised MP4 (faststart)" as a preset, and a preset
+    # is only answers to questions that exist, so the question has to exist
+    # (DECISIONS D45). Moving the index to the front lets a player start before
+    # the file has finished downloading; it costs an extra pass over the output
+    # at the end, which is why it is off by default.
+    - id: streaming
+      prompt: Optimise for streaming?
+      hint: Writes the index at the front of the file so playback can start before
+        it has fully downloaded. MP4 and MOV only.
+      type: confirm
+      when: { answer_is: { container: mp4 } }
+      default: "no"
+      args: ["-movflags", "+faststart"]
+
+  # Presets (plan.md §5): named answer sets offered before the questions. Each is
+  # exactly what the user would type in by hand, so every one of these has to
+  # name real values of real steps (the loader proves it - DECISIONS D45).
+  presets:
+    - id: web_mp4
+      label: Web-optimised MP4
+      description: H.264 and AAC in an MP4 whose index sits at the front, so a
+        browser starts playing before the whole file has arrived.
+      answers:
+        container: mp4
+        vcodec: h264
+        quality_h264: balanced
+        audio: aac
+        streaming: "yes"
+
+    - id: whatsapp_mp4
+      label: WhatsApp-friendly MP4
+      description: H.264 and AAC in an MP4, at a modest quality. The combination
+        phones and messaging apps play without re-encoding.
+      answers:
+        container: mp4
+        vcodec: h264
+        quality_h264: small
+        audio: aac
+        streaming: "no"
+
+    - id: youtube_mp4
+      label: YouTube upload (H.264/AAC)
+      description: High-quality H.264 and AAC in an MP4, which is what YouTube's
+        own upload guidance recommends. The site re-encodes whatever arrives.
+      answers:
+        container: mp4
+        vcodec: h264
+        quality_h264: high
+        audio: aac
+        streaming: "no"

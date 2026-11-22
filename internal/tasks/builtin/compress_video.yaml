@@ -83,3 +83,31 @@
       choices:
         - { label: MP4, value: mp4, output_ext: mp4, requires_muxer: mp4, default: true }
         - { label: MKV, value: mkv, output_ext: mkv, requires_muxer: matroska }
+
+  # Presets (plan.md §5). The "Discord under 25 MB" one sets the target-size
+  # branch and re-encodes the audio to 128k, which is the bitrate the bitrate
+  # plan already subtracts (DECISIONS D8): leaving the audio as a stream copy
+  # would let the result overrun the size the user asked for.
+  presets:
+    - id: discord_25mb
+      label: Discord under 25 MB
+      description: Targets 25 MiB with H.264 and AAC in an MP4, which fits under
+        Discord's free upload limit even with the audio re-encoded at 128k.
+      answers:
+        method: size
+        codec: h264
+        audio: aac128
+        size: "25"
+        container: mp4
+
+    - id: small_h265
+      label: Smallest file (H.265)
+      description: A quality-controlled H.265 encode, which is 30-50% smaller
+        than H.264 at the same quality, at the cost of slower encoding and less
+        universal playback.
+      answers:
+        method: quality
+        codec: h265
+        quality: balanced
+        audio: copy
+        container: mp4

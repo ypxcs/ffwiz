@@ -37,9 +37,16 @@ func (m *Model) startTask(id string) {
 	m.concatDir = ""
 	m.concatShowAll = false
 	m.clearConcatFilter()
+	m.presetIndex = 0
 	m.notice, m.noticeIsError = "", false
 	m.screen = ScreenStep
 	m.syncStep()
+	// A task with presets is configured by picking one first: plan.md §5 calls
+	// them "task answers prefilled into a task", so the choice of preset decides
+	// which answers to start from before any question is asked (DECISIONS D45).
+	if len(task.Presets) > 0 {
+		m.screen = ScreenPreset
+	}
 }
 
 // resolution re-resolves the task against the answers so far. It is cheap (a

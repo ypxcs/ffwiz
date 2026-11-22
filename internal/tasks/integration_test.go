@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -644,6 +645,98 @@ func runHardwareEncode(t *testing.T, ffmpegPath string, args []string) error {
 		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(out.String()))
 	}
 	return nil
+}
+
+// TestIntegrationRunPresets runs every preset the catalogue ships against the
+// real ffmpeg (plan.md §5).
+//
+// A preset is a promise about a whole outcome - "an MP4 that fits under Discord's
+// 25 MB limit" - and a promise that is only ever built, never run, rots the
+// moment a step or a flag underneath it changes. So each preset is built from its
+// own answers and executed, and the file it said it would write has to appear and
+// be readable.
+func TestIntegrationRunPresets(t *testing.T) {
+	tools := requireTools(t)
+	set := loadBuiltin(t)
+	caps, err := tools.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+
+	ran := 0
+	for _, task := range set.Tasks {
+		if len(task.Presets) == 0 {
+			continue
+		}
+		sample := "av.mp4"
+		if !task.Requires.Video {
+			sample = "audio_only.mp3"
+		}
+		// The engine names the output after its input, so the run works on a copy
+		// in the test's own directory rather than writing into testdata (and the
+		// copy proves the "next to the input" rule at the same time).
+		work := t.TempDir()
+		local := filepath.Join(work, filepath.Base(sample))
+		data, err := os.ReadFile(requireSample(t, sample))
+		if err != nil {
+			t.Fatalf("copying the sample: %v", err)
+		}
+		if err := os.WriteFile(local, data, 0o600); err != nil {
+			t.Fatalf("copying the sample: %v", err)
+		}
+		info, err := ffmpeg.Probe(context.Background(), tools.FFprobe, local)
+		if err != nil {
+			t.Fatalf("probing %s: %v", local, err)
+		}
+
+		for _, preset := range task.Presets {
+			t.Run(task.ID+"/"+preset.ID, func(t *testing.T) {
+				ran++
+				dir := t.TempDir()
+				// No output path is given, so the engine names it exactly as the
+				// wizard would: the preset's container choice decides the
+				// extension (plan.md §6.5, DECISIONS D24).
+				eng := &Engine{Task: task, Info: info, Caps: &caps, TempDir: dir}
+				cmd, res, err := eng.Build(preset.Answers, BuildOptions{Input: local})
+				if err != nil {
+					t.Fatalf("Build with the preset's answers %v: %v", preset.Answers, err)
+				}
+				output, err := DefaultOutput(local, res)
+				if err != nil {
+					t.Fatalf("DefaultOutput: %v", err)
+				}
+				if err := ffmpeg.WriteArtifacts(cmd); err != nil {
+					t.Fatalf("writing the files the command reads: %v", err)
+				}
+
+				runFFmpeg(t, tools.FFmpeg, cmd.Args())
+
+				files := ffmpeg.OutputFiles(output)
+				if len(files) == 0 {
+					t.Fatalf("the preset wrote nothing at %s", output)
+				}
+				got, err := ffmpeg.Probe(context.Background(), tools.FFprobe, files[0])
+				if err != nil {
+					t.Fatalf("probing the output: %v", err)
+				}
+				// A preset whose name quotes a size is making a claim about the
+				// file, so the claim is checked rather than assumed.
+				if target := preset.Answers["size"]; target != "" {
+					mib, err := strconv.ParseFloat(target, 64)
+					if err != nil {
+						t.Fatalf("the preset's target size %q is not a number: %v", target, err)
+					}
+					if float64(got.Format.Size) > mib*1024*1024 {
+						t.Errorf("the output is %d bytes, over the %s MiB the preset targets", got.Format.Size, target)
+					}
+				}
+				t.Logf("%s: %s", preset.Label, strings.Join(cmd.DisplayArgs(), " "))
+			})
+		}
+	}
+	if ran == 0 {
+		t.Fatal("the catalogue ships no presets, so this test proves nothing")
+	}
 }
 
 // wantStream asserts the output has a stream of the given kind and codec.

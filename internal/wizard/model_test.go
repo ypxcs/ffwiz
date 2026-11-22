@@ -213,6 +213,10 @@ func (s *session) selectTask(id string) {
 
 // startTask opens the task list (if it is not already open) and starts the named
 // task, so a test is not tied to the order the catalogue happens to load in.
+//
+// The task's ordinary questions are where it lands, not the preset list: a test
+// that is not about presets asks for the same thing it did before presets
+// existed. startTaskWithPreset is the other way in (DECISIONS D45).
 func (s *session) startTask(id string) {
 	s.t.Helper()
 	if s.model.screen == ScreenInput {
@@ -220,6 +224,63 @@ func (s *session) startTask(id string) {
 	}
 	if s.model.screen != ScreenTask {
 		s.t.Fatalf("startTask(%q): screen = %v, want the task list", id, s.model.screen)
+	}
+	s.selectTask(id)
+	s.press("enter")
+	// A task with presets opens the preset list first; hop to its last row, which
+	// is the one that asks the task's own questions (DECISIONS D45).
+	if s.model.screen == ScreenPreset {
+		for s.model.presetIndex < s.model.presetRowCount()-1 {
+			s.press("down")
+		}
+		s.press("enter")
+	}
+	if s.model.screen != ScreenStep {
+		s.t.Fatalf("startTask(%q): screen = %v, want the first question", id, s.model.screen)
+	}
+}
+
+// startTaskWithPreset starts the named task and picks the preset in the given row
+// of its preset list.
+func (s *session) startTaskWithPreset(id string, row int) {
+	s.t.Helper()
+	if s.model.screen == ScreenInput {
+		s.press("enter")
+	}
+	s.selectTask(id)
+	s.press("enter")
+	if s.model.screen != ScreenPreset {
+		s.t.Fatalf("startTaskWithPreset(%q): screen = %v, want the preset list", id, s.model.screen)
+	}
+	for i := 0; i < row; i++ {
+		s.press("down")
+	}
+	s.press("enter")
+}
+
+// acceptDefaults presses enter until the wizard leaves the questions, which is
+// "take every recommended answer".
+//
+// The number of questions is deliberately not written down. It was, and adding a
+// question to a task broke a dozen tests that were not about counting: the bound
+// here is a runaway guard, and the assertion that follows each call is what
+// proves the walk ended where it should.
+func (s *session) acceptDefaults() {
+	s.t.Helper()
+	for i := 0; i < 32 && s.model.screen == ScreenStep; i++ {
+		s.press("enter")
+	}
+}
+
+// tryStartTask selects a task and presses enter without requiring it to start,
+// which is what a test of a *refusal* needs (startTask insists on a start).
+func (s *session) tryStartTask(id string) {
+	s.t.Helper()
+	if s.model.screen == ScreenInput {
+		s.press("enter")
+	}
+	if s.model.screen != ScreenTask {
+		s.t.Fatalf("tryStartTask(%q): screen = %v, want the task list", id, s.model.screen)
 	}
 	s.selectTask(id)
 	s.press("enter")
@@ -264,13 +325,8 @@ func TestWizardHappyPath(t *testing.T) {
 		t.Fatalf("screen = %v, want the first step", s.model.screen)
 	}
 
-	// Every question is answered with its default, so four enters walk the task.
-	for i := 0; i < 4; i++ {
-		if s.model.screen != ScreenStep {
-			t.Fatalf("step %d: screen = %v, want a step", i, s.model.screen)
-		}
-		s.press("enter")
-	}
+	// Every question is answered with its default, which walks the whole task.
+	s.acceptDefaults()
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("after the last step: screen = %v, want the output screen", s.model.screen)
@@ -381,13 +437,15 @@ func TestWizardGoingBackKeepsAnswersAndRecomputes(t *testing.T) {
 	s.press("down", "enter") // vcodec: H.265
 	s.press("down", "enter") // quality_h265: Small file
 	s.press("enter")         // audio: keep as is
+	s.press("enter")         // streaming: leave it off
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
 
-	// Go all the way back to the codec question and return, twice. The answers
-	// given on the way through must still be there.
+	// Go all the way back to the codec question and return. The answers given on
+	// the way through must still be there.
+	s.press("esc") // back to the streaming step
 	s.press("esc") // back to the audio step
 	s.press("esc") // back to quality
 	s.press("esc") // back to vcodec
@@ -399,7 +457,7 @@ func TestWizardGoingBackKeepsAnswersAndRecomputes(t *testing.T) {
 		t.Errorf("vcodec = %q after going back, want the answer to survive", got)
 	}
 
-	s.press("enter", "enter", "enter") // forward again without changing anything
+	s.acceptDefaults() // forward again without changing anything
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v after returning, want the output screen", s.model.screen)
 	}
@@ -424,12 +482,12 @@ func TestWizardChangingAnAnswerDropsTheStepsItRuledOut(t *testing.T) {
 	// Answer everything for MP4/H.264, then go back and switch the container to
 	// WebM. The H.264-specific steps must disappear rather than linger with
 	// stale answers.
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
 
-	s.press("esc", "esc", "esc", "esc") // audio -> quality -> vcodec -> container
+	s.press("esc", "esc", "esc", "esc", "esc") // streaming -> audio -> quality -> vcodec -> container
 	step, _ := s.model.currentStep()
 	if step.ID != "container" {
 		t.Fatalf("step = %q, want container", step.ID)
@@ -480,7 +538,7 @@ func atOutput(t *testing.T) (*session, string) {
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -607,7 +665,7 @@ func TestWizardAcceptsOnlyAPlaceItCanWrite(t *testing.T) {
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
@@ -648,7 +706,7 @@ func TestWizardRefusesAFolderItCannotWriteTo(t *testing.T) {
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
 	}
@@ -724,8 +782,7 @@ func TestWizardWarnsWhenTheTargetWillNotFit(t *testing.T) {
 			s.startTask("compress_video")
 			// method: the target-size branch is the second answer.
 			s.press("down")
-			// codec, audio, size, container, then the output screen.
-			s.press("enter", "enter", "enter", "enter", "enter")
+			s.acceptDefaults() // codec, audio, size, container, then the output screen
 
 			if s.model.screen != ScreenOutput {
 				t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -755,7 +812,7 @@ func TestWizardDoesNotGuessTheSizeOfAQualityEncode(t *testing.T) {
 	})
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -771,7 +828,8 @@ func TestWizardWillNotStartWhenTheOutputAppeared(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter")
+	s.acceptDefaults()
+	s.press("enter") // accept the name for the review screen
 
 	if s.model.screen != ScreenReview {
 		t.Fatalf("screen = %v, want the review screen", s.model.screen)
@@ -796,7 +854,7 @@ func TestWizardRefusesTheInputAsOutput(t *testing.T) {
 	input := filepath.Join(dir, "clip.mp4")
 	s := wizardAt(t, input)
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 
 	s.model.outputInput.SetValue(input)
 	s.press("enter")
@@ -888,7 +946,7 @@ func TestWizardLettersDoNotTriggerActionsInTextFields(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter")
+	s.acceptDefaults()
 
 	if s.model.screen != ScreenOutput {
 		t.Fatalf("screen = %v, want the output screen", s.model.screen)
@@ -914,7 +972,8 @@ func TestWizardCopyWithoutAClipboardExplainsItself(t *testing.T) {
 	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps})
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter", "c")
+	s.acceptDefaults()
+	s.press("enter", "c")
 
 	if s.model.screen != ScreenReview {
 		t.Fatalf("screen = %v, want the review screen", s.model.screen)
@@ -934,7 +993,8 @@ func TestWizardCopyFailureIsReported(t *testing.T) {
 	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps, Clipboard: clip})
 	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter", "c")
+	s.acceptDefaults()
+	s.press("enter", "c")
 
 	if !strings.Contains(s.view(), "clipboard is full") {
 		t.Errorf("the clipboard error was swallowed:\n%s", s.view())
@@ -967,7 +1027,8 @@ func TestReviewAlignsTheAnswerColumn(t *testing.T) {
 	dir := t.TempDir()
 	s := wizardAt(t, filepath.Join(dir, "clip.mp4"))
 	s.startTask("convert_video")
-	s.press("enter", "enter", "enter", "enter", "enter")
+	s.acceptDefaults()
+	s.press("enter")
 
 	// The label column is 18 wide, plus the space before the answer, so every
 	// answer begins in the same place no matter how long its label is.
@@ -1071,12 +1132,12 @@ func TestViewIsTotal(t *testing.T) {
 		{
 			name: "output",
 			want: []string{"Where should the result go?"},
-			run:  func(s *session) { s.startTask("convert_video"); s.press("enter", "enter", "enter", "enter") },
+			run:  func(s *session) { s.startTask("convert_video"); s.acceptDefaults() },
 		},
 		{
 			name: "review",
 			want: []string{"Ready to go", "Output format", "press r to run it"},
-			run:  func(s *session) { s.startTask("convert_video"); s.press("enter", "enter", "enter", "enter", "enter") },
+			run:  func(s *session) { s.startTask("convert_video"); s.acceptDefaults(); s.press("enter") },
 		},
 		{
 			name: "review with an unanswered step",
@@ -1108,7 +1169,8 @@ func TestViewIsTotal(t *testing.T) {
 				// Walk to the review screen first: the progress bar needs the
 				// command, and the expected duration comes from it.
 				s.startTask("convert_video")
-				s.press("enter", "enter", "enter", "enter", "enter")
+				s.acceptDefaults()
+				s.press("enter") // the output screen's name
 				s.model.screen = ScreenRun
 				s.model.elapsed = 3 * time.Second
 				s.model.progress = ffmpeg.Progress{OutTime: time.Second, Speed: 2, TotalSize: 2048, Bitrate: 183600}

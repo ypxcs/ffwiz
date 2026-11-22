@@ -30,6 +30,9 @@ const (
 	ScreenInput Screen = iota
 	// ScreenTask picks a job from the catalogue.
 	ScreenTask
+	// ScreenPreset picks a named answer set for that job, when it has one
+	// (plan.md §5).
+	ScreenPreset
 	// ScreenStep asks the current step's question.
 	ScreenStep
 	// ScreenOutput chooses where to write.
@@ -139,6 +142,10 @@ type Model struct {
 	info  *ffmpeg.MediaInfo
 
 	taskIndex int
+	// presetIndex is the row under the cursor on the preset screen. It runs
+	// over the task's presets and then one past the end, which is the "no
+	// preset" row (DECISIONS D45).
+	presetIndex int
 
 	// engine, answers and stepIndex drive the step screens. answers holds only
 	// what the user actually chose; defaults are applied by the engine on every
@@ -494,6 +501,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateInput(msg, isKey, keyMsg)
 	case ScreenTask:
 		return m.updateTask(keyMsg, isKey)
+	case ScreenPreset:
+		return m.updatePreset(keyMsg, isKey)
 	case ScreenStep:
 		return m.updateStep(msg, keyMsg, isKey)
 	case ScreenOutput:
@@ -666,6 +675,8 @@ func (m Model) body(width int) string {
 		return m.inputBody(width)
 	case ScreenTask:
 		return m.taskBody(width)
+	case ScreenPreset:
+		return m.presetBody(width)
 	case ScreenStep:
 		return m.stepBody(width)
 	case ScreenOutput:
@@ -688,6 +699,8 @@ func (m Model) hint() string {
 		return m.hintInput()
 	case ScreenTask:
 		return m.hintTask()
+	case ScreenPreset:
+		return m.hintPreset()
 	case ScreenStep:
 		return m.hintStep()
 	case ScreenOutput:
@@ -718,9 +731,11 @@ func (m Model) header(width int) string {
 	parts := make([]string, 0, len(crumbs))
 	for _, c := range crumbs {
 		active := m.screen == c.screen ||
-			// The output screen is still part of the options phase, the edit
-			// screen still part of the review, and the done screen part of the
-			// run.
+			// The preset screen is still the task phase - it is a way of
+			// choosing the job, one level more specific - the output screen is
+			// still part of the options phase, the edit screen still part of the
+			// review, and the done screen part of the run.
+			(c.screen == ScreenTask && m.screen == ScreenPreset) ||
 			(c.screen == ScreenStep && m.screen == ScreenOutput) ||
 			(c.screen == ScreenReview && m.screen == ScreenEdit) ||
 			(c.screen == ScreenRun && m.screen == ScreenDone)
@@ -765,6 +780,14 @@ func (m Model) helpBindings() helpView {
 			},
 		}
 	case ScreenTask:
+		return helpView{
+			short: []key.Binding{k.Up, k.Down, k.Select, k.Back, k.Quit},
+			full: [][]key.Binding{
+				{k.Up, k.Down, k.Select},
+				{k.Back, k.Quit, k.Help},
+			},
+		}
+	case ScreenPreset:
 		return helpView{
 			short: []key.Binding{k.Up, k.Down, k.Select, k.Back, k.Quit},
 			full: [][]key.Binding{
