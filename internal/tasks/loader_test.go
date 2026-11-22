@@ -382,6 +382,33 @@ func TestLoadReportsBadYAML(t *testing.T) {
 			builtin: "- id: x\n  label: X\n  requires_filter: \"not a name\"\n  steps:\n    - { id: a, prompt: A, type: confirm }\n",
 			want:    "implausible requires_filter",
 		},
+		{
+			// A concat step's files *are* the input, so it has no options of
+			// its own (DECISIONS D41).
+			name:    "choices on a concat step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, choices: [{ label: L, value: v }] }\n",
+			want:    "must not declare choices",
+		},
+		{
+			name:    "args on a concat step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, args: [\"-c\", \"copy\"] }\n",
+			want:    "as the input",
+		},
+		{
+			name:    "a template on a concat step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, template: [\"-t\", \"{value}\"] }\n",
+			want:    "as the input",
+		},
+		{
+			name:    "a default on a concat step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, default: \"a.mp4\\nb.mp4\" }\n",
+			want:    "must not declare a default",
+		},
+		{
+			name:    "a validate block on a concat step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: concat, validate: { regex: \"^a\" } }\n",
+			want:    "only meaningful for steps whose answer is a value",
+		},
 	}
 
 	for _, tc := range tests {

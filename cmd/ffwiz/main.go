@@ -11,12 +11,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
 	"github.com/ypxcs/ffwiz/internal/tasks"
+	"github.com/ypxcs/ffwiz/internal/tempdir"
 	"github.com/ypxcs/ffwiz/internal/wizard"
 )
 
@@ -42,6 +45,7 @@ func run() error {
 		overwrite = flag.Bool("overwrite", false, "use -y instead of -n in the dumped command")
 		noCaps    = flag.Bool("ignore-capabilities", false, "do not hide options this ffmpeg build cannot produce")
 		jsonOut   = flag.Bool("json", false, "print the dump as JSON")
+		tempDir   = flag.String("temp-dir", "", "where --dump writes the files the command reads (default: a fresh temporary directory)")
 	)
 	var answerFlags []string
 	flag.Func("answers", "comma-separated step=value answers, repeatable; values may not contain commas (with --dump)", func(v string) error {
@@ -74,7 +78,13 @@ func run() error {
 	}
 	logf("ffwiz starting: args=%q", os.Args)
 
-	ctx := context.Background()
+	// A signal has to clean up the temporary files even though nothing can run a
+	// deferred call: the process is going away (plan.md §8, DECISIONS D10). In
+	// the TUI ctrl+c is a key rather than a signal, so this covers SIGTERM and
+	// the window before the terminal is in raw mode.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	tools, err := ffmpeg.Locate(ctx, ffmpeg.Overrides{
 		FFmpeg:  *ffmpegFlag,
 		FFprobe: *ffprobeFlag,
@@ -125,6 +135,18 @@ func run() error {
 		if err := addAnswers(answers, answerVerbatim); err != nil {
 			return err
 		}
+		// A dumped command may name a file ffwiz writes for it - today the
+		// concat list. It is written into a fresh directory that is *not*
+		// removed: the printed command has to stay runnable, and a one-shot CLI
+		// has no exit to clean up at (DECISIONS D41).
+		dumpTemp := *tempDir
+		if dumpTemp == "" {
+			if reg, err := tempdir.New("ffwiz-*"); err == nil {
+				dumpTemp = reg.Dir()
+			} else {
+				logf("cannot make a temporary directory (%v); using the system one", err)
+			}
+		}
 		return runDump(os.Stdout, tools, set, dumpFlags{
 			TaskID:             *dumpTask,
 			Answers:            answers,
@@ -133,6 +155,7 @@ func run() error {
 			Overwrite:          *overwrite,
 			IgnoreCapabilities: *noCaps,
 			JSON:               *jsonOut,
+			TempDir:            dumpTemp,
 		})
 	}
 
@@ -160,6 +183,22 @@ func run() error {
 		startDir, _ = os.UserHomeDir()
 	}
 
+	// The session's generated files - the concat list - live in one directory
+	// that is removed however the session ends: a normal exit, a failure, or a
+	// signal (plan.md §8, DECISIONS D10).
+	tmp, err := tempdir.New("ffwiz-*")
+	if err != nil {
+		logf("cannot make a temporary directory (%v); generated files go to the system one", err)
+	} else {
+		logf("temporary directory: %s", tmp.Dir())
+	}
+	defer func() {
+		if err := tmp.Flush(); err != nil {
+			logf("could not remove %s: %v", tmp.Dir(), err)
+		}
+	}()
+	tmp.Watch(ctx)
+
 	model := wizard.New(wizard.Deps{
 		Set:          set,
 		Caps:         &caps,
@@ -167,6 +206,7 @@ func run() error {
 		Input:        input,
 		StartDir:     startDir,
 		Clipboard:    wizard.NewSystemClipboard(),
+		TempDir:      tmp.Dir(),
 		ProbeTimeout: 30 * time.Second,
 	})
 	program := tea.NewProgram(model)

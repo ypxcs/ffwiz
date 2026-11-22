@@ -21,6 +21,22 @@ type InputSpec struct {
 	Args []string
 }
 
+// Artifact is a file the command reads from disk but ffwiz writes itself -
+// today the concatenation list (plan.md §5.9).
+//
+// The engine produces an artifact as data rather than writing it, because
+// building a command has to stay free of side effects: the preview rebuilds the
+// command on every keystroke. The files are created by Start, immediately before
+// ffmpeg runs, so a list cannot be missing when the command that names it needs
+// it.
+type Artifact struct {
+	// Path is where the file has to exist for the command to run. It is the
+	// path that appears in the argument list.
+	Path string
+	// Content is what to write there.
+	Content string
+}
+
 // Request is a fully resolved description of one ffmpeg invocation.
 //
 // It is produced by the task engine (internal/tasks) and consumed by Build.
@@ -53,6 +69,10 @@ type Request struct {
 
 	// Format, when set, adds "-f <format>".
 	Format string
+
+	// Artifacts are files ffwiz writes for the command to read, keyed by the
+	// path the arguments already refer to. The concatenation list is one.
+	Artifacts []Artifact
 
 	// Overwrite selects "-y" instead of the default "-n". ffwiz never sets
 	// this without an explicit user confirmation (plan.md §8).
@@ -150,6 +170,9 @@ func (c *Command) ExpectedDuration() time.Duration {
 
 // Overwrites reports whether the command may clobber an existing file.
 func (c *Command) Overwrites() bool { return c.req.Overwrite }
+
+// Artifacts are the files ffwiz must write before this command can run.
+func (c *Command) Artifacts() []Artifact { return c.req.Artifacts }
 
 // commonArgs builds the argument order shared by both the exec and display
 // forms. The ordering rules here are the reason this type exists:

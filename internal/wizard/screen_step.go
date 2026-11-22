@@ -20,7 +20,7 @@ func (m *Model) startTask(id string) {
 		m.notice, m.noticeIsError = "unknown task "+id, true
 		return
 	}
-	m.engine = &tasks.Engine{Task: task, Info: m.info, Caps: m.caps}
+	m.engine = &tasks.Engine{Task: task, Info: m.info, Caps: m.caps, TempDir: m.tempDir}
 	// A fresh map, not a cleared one: answers from the previous task were keyed
 	// by that task's step ids and mean nothing here.
 	m.answers = map[string]string{}
@@ -28,6 +28,12 @@ func (m *Model) startTask(id string) {
 	m.choiceIdx = 0
 	m.outputPath = ""
 	m.copied = false
+	// The clip browser belongs to the task, so a new task starts with an empty
+	// list even if the previous one also joined clips.
+	m.concatPicked = nil
+	m.concatDir = ""
+	m.concatShowAll = false
+	m.clearConcatFilter()
 	m.notice, m.noticeIsError = "", false
 	m.screen = ScreenStep
 	m.syncStep()
@@ -149,6 +155,9 @@ func (m *Model) syncStep() {
 		m.rangeField = 0
 		m.rangeStart.Focus()
 
+	case tasks.StepConcat:
+		m.syncConcat(step)
+
 	default:
 		m.stepInput.Placeholder = step.Placeholder
 		m.stepInput.SetValue(current)
@@ -246,6 +255,9 @@ func (m Model) stepBody(width int) string {
 		if len := m.inputLength(); len != "" {
 			b.WriteString("\n" + m.styles.Muted.Render("the input is "+len+" long") + "\n")
 		}
+
+	case tasks.StepConcat:
+		b.WriteString(m.concatBody(width))
 
 	default:
 		b.WriteString("  " + m.stepInput.View() + "\n")
@@ -411,6 +423,8 @@ func (m Model) hintStep() string {
 		}
 	}
 	switch step.Type {
+	case tasks.StepConcat:
+		return m.hintConcat()
 	case tasks.StepChoice, tasks.StepMulti:
 		shown := m.resolution().Shown[step.ID]
 		if m.choiceIdx >= 0 && m.choiceIdx < len(shown) && shown[m.choiceIdx].Hint != "" {
@@ -547,6 +561,9 @@ func (m Model) updateStep(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.
 			m.rangeEnd, cmd = m.rangeEnd.Update(msg)
 		}
 		return m, cmd
+
+	case tasks.StepConcat:
+		return m.updateConcatStep(msg, keyMsg, isKey)
 
 	default:
 		// A single text field: only esc leaves, because `e` and `q` are letters
@@ -685,6 +702,9 @@ func (m Model) stepAdvance() (tea.Model, tea.Cmd) {
 
 	case tasks.StepTimeRange:
 		return m.rangeAdvance(step)
+
+	case tasks.StepConcat:
+		return m.concatAdvance(step)
 
 	default:
 		value := strings.TrimSpace(m.stepInput.Value())

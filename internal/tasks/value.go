@@ -71,6 +71,11 @@ func (t StepType) AcceptsValueValidation() bool {
 		// The answer comes from a fixed list, so a rule would either restate the
 		// list or never fire.
 		return false
+	case StepConcat:
+		// The answer is a list of paths, and a regex over several lines would be
+		// unreadable; the step's own rule (CheckConcatAnswer) is what constrains
+		// it (DECISIONS D41).
+		return false
 	default:
 		return true
 	}
@@ -89,7 +94,10 @@ var ErrValueRequired = errors.New("a value is required")
 // means "no" rather than "ask me again" (see selectConfirm).
 func (s Step) RequiresValue() bool {
 	switch s.Type {
-	case StepChoice, StepMulti, StepConfirm:
+	case StepChoice, StepMulti, StepConfirm, StepConcat:
+		// A concat step's files *are* its contribution: with none chosen there
+		// is no input to read at all, so it cannot be left unanswered the way an
+		// optional text field can.
 		return true
 	default:
 		return len(s.Template) > 0 || len(s.InputTemplate) > 0 || len(s.Filters) > 0

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -307,6 +308,30 @@ func (o RunOptions) withDefaults() RunOptions {
 // ErrNoCommand is returned by Start when there is nothing to run.
 var ErrNoCommand = errors.New("no command to run")
 
+// writeArtifacts creates the files the command reads from disk.
+//
+// It is exported because the debug dump needs it too: `ffwiz --dump` prints a
+// command meant to be pasted into a shell, and a command whose concat list does
+// not exist is not a command anybody can run. A failure here is reported as the
+// run's error rather than logged, because the arguments already name the missing
+// file and ffmpeg's own complaint about it is much harder to act on.
+func WriteArtifacts(cmd *Command) error {
+	for _, a := range cmd.Artifacts() {
+		if a.Path == "" {
+			return errors.New("a file to write for this command has no path")
+		}
+		if dir := filepath.Dir(a.Path); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("creating %s: %w", dir, err)
+			}
+		}
+		if err := os.WriteFile(a.Path, []byte(a.Content), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", a.Path, err)
+		}
+	}
+	return nil
+}
+
 // Run is one executing ffmpeg process.
 type Run struct {
 	events  chan Event
@@ -332,6 +357,12 @@ func Start(ctx context.Context, ffmpegPath string, cmd *Command, opts RunOptions
 		return nil, ErrNoCommand
 	}
 	opts = opts.withDefaults()
+
+	// The files the command reads have to exist before ffmpeg starts, and this
+	// is the last moment before it does.
+	if err := WriteArtifacts(cmd); err != nil {
+		return nil, err
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	// Not exec.CommandContext: its cancellation is a bare SIGKILL, and ffmpeg

@@ -335,6 +335,92 @@ func TestEscapeFilterValueSurvivesRealFilenames(t *testing.T) {
 	}
 }
 
+// TestConcatListSurvivesRealFilenames is the verification behind ConcatList's
+// rules: joining clips has to work whatever the clips are called (plan.md §8,
+// §11). It is the concat-list counterpart of
+// TestEscapeFilterValueSurvivesRealFilenames, and it exists because the demuxer's
+// quoting is quirky enough that guessing is not good enough (DECISIONS D41).
+func TestConcatListSurvivesRealFilenames(t *testing.T) {
+	tools := requireTools(t)
+	source := requireSample(t, "av.mp4")
+
+	names := []string{
+		"plain.mp4",
+		"sp ace.mp4",
+		"quote's.mp4",
+		"apos'inside'.mp4",
+		"colon:name.mp4",
+		"eq=uals.mp4",
+		"com,ma.mp4",
+		"semi;i.mp4",
+		"brack[et].mp4",
+		"back\\slash.mp4",
+		"dollar$sign.mp4",
+		"ünïcodé.mp4",
+		"中文.mp4",
+		"all'of:them\\at[once];and=then,some.mp4",
+	}
+
+	dir := t.TempDir()
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			// The same clip twice under the awkward name, so the join is real
+			// (4s of output from two 2s clips) and only the name varies.
+			clip := filepath.Join(dir, name)
+			blob, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatalf("reading the sample: %v", err)
+			}
+			if err := os.WriteFile(clip, blob, 0o644); err != nil {
+				t.Fatalf("writing %q: %v", name, err)
+			}
+
+			out := filepath.Join(t.TempDir(), "joined.mp4")
+			listDir := t.TempDir()
+			content := ConcatList([]string{clip, clip})
+			list := ConcatListPath(listDir, content)
+			cmd, err := Build(Request{
+				Inputs: []InputSpec{{
+					Path: list,
+					Args: []string{"-f", "concat", "-safe", "0"},
+				}},
+				Artifacts:  []Artifact{{Path: list, Content: content}},
+				Output:     out,
+				OutputArgs: []string{"-c", "copy"},
+			})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			// Start writes the list itself; the test never touches the file.
+			run, err := Start(context.Background(), tools.FFmpeg, cmd, RunOptions{})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			var result Result
+			for ev := range run.Events() {
+				if ev.Done {
+					result = ev.Result
+				}
+			}
+			if result.Err != nil {
+				t.Fatalf("joining %q failed: %v\n%s", name, result.Err, strings.Join(result.Stderr, "\n"))
+			}
+
+			info, err := Probe(context.Background(), tools.FFprobe, out)
+			if err != nil {
+				t.Fatalf("probing the joined output: %v", err)
+			}
+			// Two copies of a 2s clip. A mangled path would have opened the
+			// wrong file or failed outright, so the length is the proof that
+			// the list named the clip exactly.
+			if got := info.Duration(); got < 3900*time.Millisecond || got > 4100*time.Millisecond {
+				t.Errorf("joined duration = %v, want ~4s (two 2s clips)", got)
+			}
+		})
+	}
+}
+
 // TestIntegrationRunReportsRealProgress runs a real encode and reads the real
 // `-progress` stream. The parsing is unit-tested against recorded output; this
 // checks that the recording still matches what this ffmpeg actually writes, and

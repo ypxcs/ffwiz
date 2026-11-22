@@ -253,6 +253,18 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 		t.Fatalf("Capabilities: %v", err)
 	}
 
+	// The concat task joins clips by path, so its answer is absolute paths to the
+	// two sample clips. They are resolved once, before the table: the samples may
+	// be missing, and requireSample is what skips the case then.
+	part1, err := filepath.Abs(filepath.Join(sampleDir, "part1.mp4"))
+	if err != nil {
+		t.Fatalf("resolving the sample clip path: %v", err)
+	}
+	part2, err := filepath.Abs(filepath.Join(sampleDir, "part2.mp4"))
+	if err != nil {
+		t.Fatalf("resolving the sample clip path: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		task    string
@@ -452,6 +464,22 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			},
 		},
 		{
+			// The two sample clips are one second each and share their codecs,
+			// so the concat demuxer copies them and the join is their sum. The
+			// list file has to be written first, which the harness does below.
+			// They are written with -an, so the joined file has no sound.
+			name:    "concat: two clips joined end to end",
+			task:    "concat",
+			answers: map[string]string{"clips": part1 + "\n" + part2},
+			input:   "av.mp4",
+			out:     "mp4",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "h264")
+				noStream(t, got, ffmpeg.StreamAudio)
+				wantDurationNear(t, got, 2*time.Second, 300*time.Millisecond)
+			},
+		},
+		{
 			// The escaped path is the point of this case. `make samples` writes
 			// subs.srt with plain content; the awkward-name coverage for filter
 			// arguments lives in internal/ffmpeg, which asks ffmpeg about every
@@ -485,10 +513,17 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s is not in the catalogue", tc.task)
 			}
-			eng := &Engine{Task: task, Info: info, Caps: &caps}
+			eng := &Engine{Task: task, Info: info, Caps: &caps, TempDir: t.TempDir()}
 			cmd, _, err := eng.Build(tc.answers, tasksBuildOptions(input, output))
 			if err != nil {
 				t.Fatalf("Build: %v", err)
+			}
+
+			// A command may name a file ffwiz writes for it - the concat list.
+			// The runner normally writes it inside Start; this harness runs the
+			// argument slice directly, so it has to do it here (DECISIONS D41).
+			if err := ffmpeg.WriteArtifacts(cmd); err != nil {
+				t.Fatalf("writing the files the command reads: %v", err)
 			}
 
 			runFFmpeg(t, tools.FFmpeg, cmd.Args())

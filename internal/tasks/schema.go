@@ -29,6 +29,10 @@ const (
 	StepResolution StepType = "resolution"
 	// StepConfirm is a yes/no toggle.
 	StepConfirm StepType = "confirm"
+	// StepConcat is a list of files joined into one input through the concat
+	// demuxer (plan.md §5.9). The answer is one path per line, in the order the
+	// clips play.
+	StepConcat StepType = "concat"
 )
 
 // Task is one user-facing job, e.g. "Convert video to another format".

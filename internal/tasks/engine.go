@@ -3,6 +3,7 @@ package tasks
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -28,6 +29,11 @@ type Engine struct {
 	// means the running platform; the golden tests set it explicitly so a task
 	// gated on hardware encoders resolves the same way everywhere.
 	Platform string
+	// TempDir is where a command's own files are written - today the
+	// concatenation list. Empty means the system temporary directory, which
+	// keeps a command built by a test coherent; the wizard passes a directory
+	// it removes on exit (plan.md §8).
+	TempDir string
 }
 
 // platform is the OS that `platform` conditions are evaluated against.
@@ -609,6 +615,17 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 				applyChoice(&req, c)
 			}
 
+		case StepConcat:
+			// The clips replace the input rather than adding to it: the file
+			// picked on the input screen was only ever the way in, and the task
+			// is "which clips, in what order".
+			inputs, artifacts, err := e.concatInput(step, res)
+			if err != nil {
+				return nil, nil, res, err
+			}
+			req.Inputs = inputs
+			req.Artifacts = append(req.Artifacts, artifacts...)
+
 		case StepConfirm:
 			if !res.Yes(step.ID) {
 				continue
@@ -658,6 +675,45 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 
 	cmd, err := ffmpeg.Build(req)
 	return cmd, pending, res, err
+}
+
+// concatInput turns a concat step's answer into the single input ffmpeg reads: a
+// list file naming the clips in order.
+//
+// The concat *demuxer* is used rather than the concat filter, because it copies
+// the streams instead of decoding and re-encoding them, which is what "join my
+// clips" almost always means. The cost is that the clips have to share codecs and
+// parameters, which is what the wizard warns about; a filter graph would need
+// each input's stream layout, which only probing can tell (plan.md §5.9,
+// DECISIONS D7/D41).
+func (e *Engine) concatInput(step Step, res Resolution) ([]ffmpeg.InputSpec, []ffmpeg.Artifact, error) {
+	paths := ParseFileList(res.Answers[step.ID])
+	if len(paths) < MinConcatFiles {
+		// The step screen enforces this too, but --dump and a user's own YAML
+		// can reach the engine without a UI, and copying one file to another
+		// is never what "join clips" means (DECISIONS D41).
+		return nil, nil, fmt.Errorf("no clips to join: a concat needs at least %d", MinConcatFiles)
+	}
+	content := ffmpeg.ConcatList(paths)
+	list := ffmpeg.ConcatListPath(e.tempDir(), content)
+	spec := ffmpeg.InputSpec{
+		Path: list,
+		// The list may name files anywhere, so the demuxer's safety check has
+		// to be off; without it ffmpeg refuses an absolute path with "unsafe
+		// file name".
+		Args: []string{"-f", "concat", "-safe", "0"},
+	}
+	return []ffmpeg.InputSpec{spec}, []ffmpeg.Artifact{{Path: list, Content: content}}, nil
+}
+
+// tempDir is where the files a command reads are written. An unset engine falls
+// back to the system temporary directory, so a command built in a test is still
+// coherent; the wizard always sets one it cleans up (plan.md §8).
+func (e *Engine) tempDir() string {
+	if e.TempDir != "" {
+		return e.TempDir
+	}
+	return os.TempDir()
 }
 
 // applyChoice folds one selected option into the request. It is shared by
@@ -731,6 +787,18 @@ func (e *Engine) expectedDuration(res Resolution) time.Duration {
 	if e.Info == nil {
 		return 0
 	}
+
+	// A concatenation's length is the sum of its clips, and the clips are not
+	// the probed input: the only way to know is a probe per clip, which the
+	// wizard does for its stream warning but the engine does not do at all.
+	// Reporting the input's own length would be worse than reporting nothing,
+	// because the progress bar would reach 100% at the wrong moment.
+	for _, step := range res.Active {
+		if step.Type == StepConcat {
+			return 0
+		}
+	}
+
 	duration := e.Info.Duration()
 
 	// A time_range step cuts the output down; several of them would apply to

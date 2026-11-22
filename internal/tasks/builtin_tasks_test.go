@@ -3,6 +3,7 @@ package tasks
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,9 +34,9 @@ func buildTask(t *testing.T, set *Set, taskID string, info *ffmpeg.MediaInfo, an
 func TestCatalogueCoversThePlannedTasks(t *testing.T) {
 	set := loadBuiltin(t)
 
-	// plan.md §5 lists eleven tasks. The ones still missing are recorded in
-	// DECISIONS.md as outstanding, so this test states which those are rather
-	// than quietly passing.
+	// plan.md §5 lists eleven tasks, and all eleven are now shipped (the
+	// last one, concat, was the only gap for a while). This test fails if a
+	// task disappears, rather than letting the catalogue quietly shrink.
 	have := map[string]bool{}
 	for _, id := range set.IDs() {
 		have[id] = true
@@ -43,6 +44,7 @@ func TestCatalogueCoversThePlannedTasks(t *testing.T) {
 	for _, id := range []string{
 		"convert_video", "compress_video", "extract_audio", "trim", "resize",
 		"change_speed", "strip_metadata", "extract_frames", "gif", "burn_subtitles",
+		"concat",
 	} {
 		if !have[id] {
 			t.Errorf("%s is missing from the catalogue (plan.md §5)", id)
@@ -651,7 +653,7 @@ func TestEveryTaskCanBeBuiltFromItsDefaults(t *testing.T) {
 				continue
 			}
 			eng := &Engine{Task: task, Info: info, Caps: machineCaps()}
-			cmd, res, err := eng.Build(nil, BuildOptions{Input: "av.mp4"})
+			cmd, res, err := eng.Build(defaultAnswers(task), BuildOptions{Input: "av.mp4"})
 			if err != nil {
 				t.Errorf("%s on %s: %v", task.ID, info.Path, err)
 				continue
@@ -660,8 +662,8 @@ func TestEveryTaskCanBeBuiltFromItsDefaults(t *testing.T) {
 				if !res.Pending[step.ID] {
 					continue
 				}
-				if step.Type == StepInput || step.Type == StepTimeRange {
-					continue // the user is meant to type this
+				if step.Type == StepInput || step.Type == StepTimeRange || step.Type == StepConcat {
+					continue // the user is meant to fill this in
 				}
 				t.Errorf("%s on %s: %s (%s) has no answer and no default",
 					task.ID, info.Path, step.ID, step.Type)
@@ -670,6 +672,128 @@ func TestEveryTaskCanBeBuiltFromItsDefaults(t *testing.T) {
 				t.Errorf("%s on %s produced a placeholder: %s", task.ID, info.Path, cmd.String())
 			}
 		}
+	}
+}
+
+// defaultAnswers fills in the steps a task has no default for but cannot be
+// built without - today only the clip list of a concat task. The point of the
+// defaults test is the steps the *task* answers for itself, so giving the user's
+// own choices here keeps that test about the defaults.
+func defaultAnswers(task Task) map[string]string {
+	var answers map[string]string
+	for _, step := range task.Steps {
+		if step.Type != StepConcat {
+			continue
+		}
+		if answers == nil {
+			answers = map[string]string{}
+		}
+		answers[step.ID] = FileList([]string{"part1.mp4", "part2.mp4"})
+	}
+	return answers
+}
+
+// TestConcatCommands: the clips are joined through a file list that is written
+// just before ffmpeg starts, so the command names the list rather than the clips
+// (plan.md §5.9, DECISIONS D41).
+//
+// The list path is derived here with the same function the engine uses rather
+// than hard-coded, so the test is about the shape of the command and not about
+// a hash that any comment change would move.
+func TestConcatCommands(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("concat")
+
+	tests := []struct {
+		name    string
+		clips   []string
+		answers map[string]string
+		// container is the choice value, empty for the default.
+		container string
+		wantTail  []string
+	}{
+		{
+			name:     "two clips as MP4",
+			clips:    []string{"/films/part one.mp4", "/films/part two.mp4"},
+			wantTail: []string{"-c", "copy", "-movflags", "+faststart", "av_concat.mp4"},
+		},
+		{
+			// Matroska takes more codec combinations, so it is the answer for
+			// clips that do not agree on their format.
+			name:      "MKV does not add faststart",
+			clips:     []string{"a.mkv", "b.mkv"},
+			container: "mkv",
+			wantTail:  []string{"-c", "copy", "av_concat.mkv"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps(), TempDir: dir}
+			answers := map[string]string{"clips": FileList(tc.clips)}
+			if tc.container != "" {
+				answers["container"] = tc.container
+			}
+			cmd, _, err := eng.Build(answers, BuildOptions{Input: "av.mp4"})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			listPath := ffmpeg.ConcatListPath(dir, ffmpeg.ConcatList(tc.clips))
+			// The clips replace the input: the file chosen on the input screen
+			// is only the way in, so it is not in the argument list at all.
+			want := append([]string{
+				"-n", "-f", "concat", "-safe", "0", "-i", listPath,
+			}, tc.wantTail...)
+			got := cmd.DisplayArgs()
+			if !slices.Equal(got, want) {
+				t.Errorf("args =\n  %v\nwant\n  %v", got, want)
+			}
+
+			// The list is written by the runner, so the command has to say
+			// what to write and where.
+			arts := cmd.Artifacts()
+			if len(arts) != 1 {
+				t.Fatalf("artifacts = %v, want one list file", arts)
+			}
+			if arts[0].Path != listPath {
+				t.Errorf("artifact path = %q, want %q", arts[0].Path, listPath)
+			}
+			if arts[0].Content != ffmpeg.ConcatList(tc.clips) {
+				t.Errorf("artifact content =\n%q\nwant\n%q", arts[0].Content, ffmpeg.ConcatList(tc.clips))
+			}
+		})
+	}
+}
+
+// TestConcatNeedsTwoClips: joining one file to itself is not something a user
+// means to ask for, and the engine must not build a command for it (D41).
+func TestConcatNeedsTwoClips(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("concat")
+	eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps(), TempDir: t.TempDir()}
+
+	for _, answer := range []string{"", "just-one.mp4"} {
+		if _, _, err := eng.Build(map[string]string{"clips": answer}, BuildOptions{Input: "av.mp4"}); err == nil {
+			t.Errorf("Build(%q) succeeded, want a refusal", answer)
+		}
+	}
+}
+
+// TestConcatStepRejectsAnAnswerWithOneClip is the UI-side half of the same rule:
+// the step screen refuses to advance with fewer than two clips, because only the
+// UI knows the user is still choosing (D41).
+func TestConcatStepRejectsAnAnswerWithOneClip(t *testing.T) {
+	step := Step{ID: "clips", Type: StepConcat, Prompt: "Clips"}
+	if err := step.CheckConcatAnswer(FileList([]string{"a.mp4", "b.mp4"})); err != nil {
+		t.Errorf("two clips were refused: %v", err)
+	}
+	if err := step.CheckConcatAnswer(FileList([]string{"a.mp4"})); err == nil {
+		t.Error("one clip was accepted, want a refusal")
+	}
+	if err := step.CheckConcatAnswer(""); err == nil {
+		t.Error("no clips was accepted, want a refusal")
 	}
 }
 

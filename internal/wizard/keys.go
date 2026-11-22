@@ -20,8 +20,16 @@ type bindings struct {
 	Quit    key.Binding
 	Help    key.Binding
 	ShowAll key.Binding
-	Copy    key.Binding
-	Run     key.Binding
+	// Filter narrows a list to the names containing what is typed (plan.md §6,
+	// Keyboard: "/ to filter lists").
+	Filter key.Binding
+	// Open descends into the highlighted directory, and Parent goes back up.
+	// They are separate from Select because a list of files has no single
+	// "the value": enter finishes choosing, so descending needs its own keys.
+	Open   key.Binding
+	Parent key.Binding
+	Copy   key.Binding
+	Run    key.Binding
 	// Cancel stops a running encode. It deliberately shares `q` and `ctrl+c`
 	// with Quit: those are the keys a user reaches for to stop something, and
 	// during a run they must ask rather than exit (plan.md §6.7).
@@ -81,6 +89,18 @@ func newBindings() bindings {
 		ShowAll: key.NewBinding(
 			key.WithKeys("a"),
 			key.WithHelp("a", "show all files"),
+		),
+		Filter: key.NewBinding(
+			key.WithKeys("/"),
+			key.WithHelp("/", "filter"),
+		),
+		Open: key.NewBinding(
+			key.WithKeys("l", "right"),
+			key.WithHelp("l", "open"),
+		),
+		Parent: key.NewBinding(
+			key.WithKeys("h", "left", "backspace"),
+			key.WithHelp("h", "up"),
 		),
 		Copy: key.NewBinding(
 			key.WithKeys("c"),

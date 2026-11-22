@@ -292,6 +292,19 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 			errs = append(errs, at("filters on an input step must use {value}; without it the answer never reaches the command"))
 		}
 
+	case StepConcat:
+		// The clips are the command's input, so a concat step has no arguments,
+		// no filters and no default of its own (DECISIONS D41).
+		if len(step.Choices) > 0 {
+			errs = append(errs, at("type concat must not declare choices"))
+		}
+		if len(step.Args) > 0 || len(step.Template) > 0 || len(step.InputTemplate) > 0 {
+			errs = append(errs, at("type concat contributes its files as the input, not through arguments"))
+		}
+		if step.Default != "" {
+			errs = append(errs, at("type concat must not declare a default; the clips are chosen"))
+		}
+
 	case "":
 		errs = append(errs, at("missing type"))
 

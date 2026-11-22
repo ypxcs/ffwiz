@@ -82,6 +82,10 @@ type Deps struct {
 	// has none, and copying explains itself instead of failing silently
 	// (DECISIONS D16).
 	Clipboard Clipboard
+	// TempDir is where a command's own files are written - today the
+	// concatenation list. Empty means the system temporary directory; the
+	// wizard a user runs passes a directory it cleans up on exit (plan.md §8).
+	TempDir string
 	// Run starts ffmpeg. Nil means use ffmpeg.Start.
 	Run Runner
 	// Reveal shows a file in the desktop's file manager, best effort. Nil means
@@ -104,6 +108,7 @@ type Model struct {
 	tools   ffmpeg.Tools
 	clip    Clipboard
 	timeout time.Duration
+	tempDir string
 
 	width, height int
 	screen        Screen
@@ -149,6 +154,26 @@ type Model struct {
 	rangeEnd    textinput.Model
 	rangeField  int
 	customInput textinput.Model
+
+	// The concat step browses the filesystem itself rather than through the
+	// shared filepicker, because it needs three things the picker does not
+	// offer: a checkbox per entry, a stable order for the clips chosen, and `/`
+	// to narrow the listing (DECISIONS D13).
+	//
+	// concatPicked is the answer - the clips in playing order. concatEntries is
+	// the current directory, concatCursor is the row under the cursor, and
+	// concatInfo holds what has been probed of each clip, which is what the
+	// "streams differ" warning is computed from (plan.md §5.9).
+	concatDir       string
+	concatEntries   []concatEntry
+	concatCursor    int
+	concatPicked    []string
+	concatInfo      map[string]*ffmpeg.MediaInfo
+	concatProbing   map[string]bool
+	concatFilter    textinput.Model
+	concatFiltering bool
+	concatShowAll   bool
+	concatErr       string
 
 	outputPath  string
 	outputInput textinput.Model
@@ -213,6 +238,7 @@ func New(deps Deps) Model {
 		runner:  deps.Run,
 		reveal:  deps.Reveal,
 		timeout: deps.ProbeTimeout,
+		tempDir: deps.TempDir,
 		answers: map[string]string{},
 		width:   80,
 		height:  24,
@@ -252,7 +278,10 @@ func New(deps Deps) Model {
 	m.rangeStart = textinput.New()
 	m.rangeEnd = textinput.New()
 	m.customInput = textinput.New()
+	m.concatFilter = textinput.New()
 	m.toggles = map[string]bool{}
+	m.concatInfo = map[string]*ffmpeg.MediaInfo{}
+	m.concatProbing = map[string]bool{}
 	m.bar = progress.New(progress.WithWidth(40), progress.WithoutPercentage())
 	m.spin = spinner.New(spinner.WithSpinner(spinner.Dot))
 	m.applyStyles()
@@ -303,6 +332,7 @@ func (m *Model) applyStyles() {
 	m.rangeStart.SetStyles(textinput.DefaultStyles(isDark))
 	m.rangeEnd.SetStyles(textinput.DefaultStyles(isDark))
 	m.customInput.SetStyles(textinput.DefaultStyles(isDark))
+	m.concatFilter.SetStyles(textinput.DefaultStyles(isDark))
 }
 
 // Init starts the wizard: it asks the terminal about its background and either
@@ -364,6 +394,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case probeMsg:
 		return m.handleProbe(msg)
+
+	case concatProbeMsg:
+		// A clip read for the concat browser: it never reaches the input
+		// screen's probe handling, which is about the file being edited.
+		return m.handleConcatProbe(msg)
 
 	case copyMsg:
 		if msg.err != nil {
@@ -455,6 +490,9 @@ func (m Model) textEntryFocused() bool {
 		case tasks.StepInput, tasks.StepTimeRange:
 			// A text field owns every letter, so `q`, `e` and `j` are text.
 			return true
+		case tasks.StepConcat:
+			// Only while a filter is being typed; the browser itself is a list.
+			return m.concatFiltering
 		case tasks.StepResolution:
 			// Only the "Custom..." row is a text field; the presets are a list.
 			shown := m.resolution().Shown[step.ID]
@@ -496,6 +534,7 @@ func (m *Model) resize() {
 	m.rangeStart.SetWidth(width - 4)
 	m.rangeEnd.SetWidth(width - 4)
 	m.customInput.SetWidth(width - 4)
+	m.concatFilter.SetWidth(width - 4)
 	m.help.SetWidth(m.width)
 	// The bar leaves room for the percentage that follows it and for the indent
 	// the run screen gives its content.
@@ -677,6 +716,12 @@ func (m Model) helpBindings() helpView {
 				short = []key.Binding{k.Up, k.Down, k.Toggle, k.Select, k.Back, k.Quit}
 			case tasks.StepTimeRange:
 				short = []key.Binding{k.Tab, k.Select, k.Back, k.Quit}
+			case tasks.StepConcat:
+				if m.concatFiltering {
+					short = []key.Binding{k.Select, k.Filter}
+				} else {
+					short = []key.Binding{k.Up, k.Down, k.Toggle, k.Open, k.Filter, k.Select, k.Back, k.Quit}
+				}
 			}
 		}
 		return helpView{

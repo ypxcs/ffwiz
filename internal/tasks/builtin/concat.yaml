@@ -1,0 +1,44 @@
+# plan.md §5.9: "Merge/concatenate clips. Pick multiple files, generate a concat
+# list file in a temp dir, and warn if streams differ."
+#
+# The clips are joined by the *concat demuxer*, which copies the streams instead
+# of decoding and re-encoding them: joining is instant and lossless. The price is
+# that the clips have to agree about their codecs and their parameters, which is
+# why the wizard compares what it probes of each clip and says so before the run
+# (DECISIONS D41).
+#
+# The list file is not written here or even by the engine: the engine emits its
+# path and its content as data, and the runner writes it just before ffmpeg
+# starts. That is what lets the preview be rebuilt on every keystroke without
+# touching the disk.
+- id: concat
+  label: Join clips into one file
+  description: Merge several files end to end, in the order you choose.
+  requires: { video: true }
+  steps:
+    - id: clips
+      prompt: Clips to join
+      hint: They play one after another. Clips that share their codecs join without re-encoding.
+      type: concat
+
+    # Copying the streams means the container has to accept whatever the clips
+    # already hold, so the choice is about the container rather than the quality,
+    # and there is no quality step at all.
+    - id: container
+      prompt: Output container
+      hint: The clips are copied unchanged, so this only decides what wraps them.
+      type: choice
+      choices:
+        - label: MP4
+          hint: The usual choice when every clip is already H.264/AAC.
+          value: mp4
+          output_ext: mp4
+          requires_muxer: mp4
+          args: ["-c", "copy", "-movflags", "+faststart"]
+          default: true
+        - label: MKV
+          hint: Matroska accepts almost any codecs, so it joins more mismatched clips.
+          value: mkv
+          output_ext: mkv
+          requires_muxer: matroska
+          args: ["-c", "copy"]

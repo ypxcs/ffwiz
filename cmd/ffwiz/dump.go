@@ -30,6 +30,9 @@ type dumpFlags struct {
 	IgnoreCapabilities bool
 	// JSON prints the resolution as JSON, for tests and tooling.
 	JSON bool
+	// TempDir is where the files the command reads are written - today the
+	// concatenation list. The caller owns its lifetime (DECISIONS D41).
+	TempDir string
 }
 
 // parseAnswers splits repeated "--answers a=b,c=d" values into a map.
@@ -102,7 +105,7 @@ func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags)
 		caps = &detected
 	}
 
-	engine := &tasks.Engine{Task: task, Info: info, Caps: caps}
+	engine := &tasks.Engine{Task: task, Info: info, Caps: caps, TempDir: flags.TempDir}
 
 	if applies, reason := task.AppliesTo(info, caps); !applies {
 		fmt.Fprintf(out, "warning: this task %s\n\n", reason)
@@ -114,6 +117,13 @@ func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags)
 		Overwrite: flags.Overwrite,
 	})
 	if err != nil {
+		return err
+	}
+
+	// A command may name a file ffwiz writes itself - the concatenation list.
+	// The dump prints a command to be pasted into a shell, so the file has to
+	// exist or the printed command cannot run (DECISIONS D41).
+	if err := ffmpeg.WriteArtifacts(cmd); err != nil {
 		return err
 	}
 
@@ -184,6 +194,16 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 	}
 
 	fmt.Fprintf(out, "\ncommand\n%s\n", cmd.String())
+
+	// A file ffwiz writes for the command is invisible in the command itself,
+	// which just names it; saying where it came from is the difference between
+	// a pasteable command and a mystery path.
+	if arts := cmd.Artifacts(); len(arts) > 0 {
+		fmt.Fprintf(out, "\nfiles written for this command\n")
+		for _, a := range arts {
+			fmt.Fprintf(out, "  %s\n", a.Path)
+		}
+	}
 }
 
 // pendingSteps lists the active steps with no answer, in step order.
