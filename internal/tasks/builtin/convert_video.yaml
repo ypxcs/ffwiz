@@ -73,6 +73,64 @@
           when: { answer_not: { container: webm } }
           skips: [quality_h264, quality_h265, quality_vp9]
 
+        # plan.md §7: "Detect hardware encoders and offer them in an 'Advanced:
+        # hardware encoding' choice only when present." A hardware encoder is a
+        # way of encoding H.264 or H.265, so it is offered *as* a codec rather
+        # than as a second question: a separate "use the GPU" step would have to
+        # emit `-c:v libx264 -c:v h264_videotoolbox`, and a command carrying two
+        # video codecs reads as a mistake even though ffmpeg honours the last
+        # one (DECISIONS D42).
+        #
+        # Presence is two conditions, not one. `requires_encoder` asks this
+        # build; a platform condition asks this machine, because ffmpeg lists
+        # VA-API encoders on macOS where they can never open a device
+        # (DECISIONS D33).
+        #
+        # Each carries its own quality setting. There is no CRF that every API
+        # spells the same way - VideoToolbox takes `-q:v`, NVENC `-cq`, Quick
+        # Sync `-global_quality` - so a choice names the flag its own API
+        # understands, which is only possible here because a choice *is* one
+        # encoder. VideoToolbox is the one this build's machine can run, so it is
+        # the one whose setting was measured; the others use a bitrate, which
+        # every API accepts.
+        - label: "H.264 (hardware, VideoToolbox)"
+          hint: Encodes on a Mac's media engine. Much faster and far lighter on
+            the battery, but a larger file than software H.264 of the same quality.
+          value: h264_videotoolbox
+          when: { all: [{ answer_not: { container: webm } }, { platform: darwin }] }
+          requires_encoder: h264_videotoolbox
+          args: ["-c:v", "h264_videotoolbox", "-q:v", "65"]
+
+        - label: "H.265 (hardware, VideoToolbox)"
+          hint: Hardware H.265. Smaller than hardware H.264, and still much
+            faster than encoding on the CPU.
+          value: hevc_videotoolbox
+          when: { all: [{ answer_not: { container: webm } }, { platform: darwin }] }
+          requires_encoder: hevc_videotoolbox
+          args: ["-c:v", "hevc_videotoolbox", "-q:v", "65"]
+
+        - label: "H.264 (hardware, NVENC)"
+          hint: Encodes on an Nvidia GPU. Very fast; targets about 8 Mbit/s, so
+            it suits HD material rather than small clips.
+          value: h264_nvenc
+          when: { answer_not: { container: webm } }
+          requires_encoder: h264_nvenc
+          args: ["-c:v", "h264_nvenc", "-b:v", "8M"]
+
+        - label: "H.265 (hardware, NVENC)"
+          hint: Hardware H.265 on an Nvidia GPU. Targets about 5 Mbit/s.
+          value: hevc_nvenc
+          when: { answer_not: { container: webm } }
+          requires_encoder: hevc_nvenc
+          args: ["-c:v", "hevc_nvenc", "-b:v", "5M"]
+
+        - label: "H.264 (hardware, Quick Sync)"
+          hint: Encodes on an Intel GPU. Very fast; targets about 8 Mbit/s.
+          value: h264_qsv
+          when: { answer_not: { container: webm } }
+          requires_encoder: h264_qsv
+          args: ["-c:v", "h264_qsv", "-b:v", "8M"]
+
     - id: quality_h264
       prompt: Quality
       hint: Higher quality means a bigger file. CRF is a constant-quality scale.

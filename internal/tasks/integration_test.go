@@ -2,9 +2,11 @@ package tasks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -545,6 +547,103 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			tc.check(t, got)
 		})
 	}
+}
+
+// TestIntegrationRunHardwareEncoder runs the command the wizard builds when the
+// user picks a hardware encoder (plan.md §7).
+//
+// It runs only where the machine really has one, which is the same pair of
+// conditions the task file gates the choice on: this build has the encoder
+// (`requires_encoder`) and it belongs to this platform (`platform`, DECISIONS
+// D33). An encoder that is listed but cannot open a device - a build with CUDA
+// support on a machine with no Nvidia card - is skipped rather than failed,
+// because plan.md §7 says a listing does not guarantee a working device.
+func TestIntegrationRunHardwareEncoder(t *testing.T) {
+	tools := requireTools(t)
+	set := loadBuiltin(t)
+	task, ok := set.Get("convert_video")
+	if !ok {
+		t.Fatal("convert_video is not in the catalogue")
+	}
+	input := requireSample(t, "av.mp4")
+	info, err := ffmpeg.Probe(context.Background(), tools.FFprobe, input)
+	if err != nil {
+		t.Fatalf("probing %s: %v", input, err)
+	}
+	caps, err := tools.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+
+	encoder := caps.PreferredHardwareEncoder("h264", runtime.GOOS)
+	if encoder == "" {
+		t.Skipf("this ffmpeg has no H.264 hardware encoder for %s", runtime.GOOS)
+	}
+	// A choice's value is the encoder's name, so the answer this test gives is
+	// the one the capability implies rather than a name written out per machine.
+	// A known encoder the task file does not offer - AMF or Media Foundation,
+	// which this pass left out - has nothing to test.
+	if !offeredChoice(task, "vcodec", encoder) {
+		t.Skipf("convert_video does not offer %s", encoder)
+	}
+
+	output := filepath.Join(t.TempDir(), "out.mp4")
+	eng := &Engine{Task: task, Info: info, Caps: &caps}
+	cmd, _, err := eng.Build(map[string]string{"vcodec": encoder}, tasksBuildOptions(input, output))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// The command must actually name the hardware encoder and must not also name
+	// a software one: two -c:v options read as a mistake (DECISIONS D42).
+	if got := strings.Join(cmd.Args(), " "); !strings.Contains(got, encoder) {
+		t.Fatalf("the command does not use %s: %s", encoder, got)
+	} else if strings.Contains(got, "libx264") {
+		t.Errorf("the command names both a hardware and a software encoder: %s", got)
+	}
+
+	if err := runHardwareEncode(t, tools.FFmpeg, cmd.Args()); err != nil {
+		t.Skipf("%s is listed but did not run here: %v", encoder, err)
+	}
+
+	got, err := ffmpeg.Probe(context.Background(), tools.FFprobe, output)
+	if err != nil {
+		t.Fatalf("probing the output: %v", err)
+	}
+	wantStream(t, got, ffmpeg.StreamVideo, "h264")
+	wantStream(t, got, ffmpeg.StreamAudio, "aac")
+}
+
+// offeredChoice reports whether a task's step offers a choice value.
+func offeredChoice(task Task, stepID, value string) bool {
+	for _, step := range task.Steps {
+		if step.ID != stepID {
+			continue
+		}
+		for _, c := range step.Choices {
+			if c.Value == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// runHardwareEncode runs a hardware-encoder command and returns ffmpeg's error
+// with its stderr, rather than failing the test: whether the device is usable is
+// exactly what the caller cannot know in advance.
+func runHardwareEncode(t *testing.T, ffmpegPath string, args []string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+	var out strings.Builder
+	cmd.Stderr = &out
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(out.String()))
+	}
+	return nil
 }
 
 // wantStream asserts the output has a stream of the given kind and codec.

@@ -27,8 +27,11 @@ type BitratePlan struct {
 	// TargetMiB and Duration are what the plan was computed from, kept so the UI
 	// can show the math without re-deriving it (DECISIONS D8).
 	TargetMiB float64
-	Duration  time.Duration
-	AudioKbps int
+	// TargetBytes is TargetMiB in bytes, so a caller that compares it with free
+	// disk space does not have to know how a MiB is spelled (plan.md §8).
+	TargetBytes int64
+	Duration    time.Duration
+	AudioKbps   int
 	// Reserve is the fraction of the target kept back for muxing, as it was
 	// actually applied.
 	Reserve float64
@@ -87,6 +90,7 @@ func PlanBitrate(targetMiB float64, duration time.Duration, audioKbps int, reser
 		MaxKbps:     videoKbps,
 		BufsizeKbps: videoKbps * 2,
 		TargetMiB:   targetMiB,
+		TargetBytes: int64(targetMiB * 1024 * 1024),
 		Duration:    duration,
 		AudioKbps:   audioKbps,
 		Reserve:     reserve,

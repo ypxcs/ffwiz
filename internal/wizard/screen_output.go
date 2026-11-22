@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/ypxcs/ffwiz/internal/ffmpeg"
+	"github.com/ypxcs/ffwiz/internal/format"
 	"github.com/ypxcs/ffwiz/internal/tasks"
 )
 
@@ -64,8 +65,43 @@ func (m Model) outputBody(width int) string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 
+	if line := m.spaceLine(width); line != "" {
+		b.WriteString(line + "\n\n")
+	}
+
 	b.WriteString(m.styles.Muted.Render("The file is written with -n, so an existing file is never replaced."))
 	return b.String()
+}
+
+// spaceLine is plan.md §8's disk-space warning, or "" when there is nothing
+// honest to say.
+//
+// Only a target-size step makes the output's size knowable before the run, so
+// that is the only time an estimate appears; a CRF encode's size depends on the
+// material and guessing it would produce a warning that is wrong as often as it
+// is right. Free space is asked of the folder the file will land in, which
+// says nothing about a different filesystem.
+func (m Model) spaceLine(width int) string {
+	expected := m.resolution().ExpectedSizeBytes
+	if expected <= 0 || m.outputPath == "" {
+		return ""
+	}
+	free, err := m.space(filepath.Dir(m.outputPath))
+	if err != nil {
+		// Best effort: a platform that cannot answer, or a folder that has just
+		// gone away, is not worth an error on a screen that is about to write
+		// there anyway - the writability check is what refuses a bad folder.
+		return ""
+	}
+
+	estimate := format.Bytes(expected)
+	if free >= expected {
+		return "  " + m.styles.Muted.Render(
+			fmt.Sprintf("The target is %s; the folder has %s free.", estimate, format.Bytes(free)))
+	}
+	return "  " + m.styles.Warning.Render(truncate(
+		fmt.Sprintf("The target is %s but the folder has only %s free; the encode will stop when the disk fills.",
+			estimate, format.Bytes(free)), max(width-2, 20)))
 }
 
 // overwriteOption is one answer to "that file already exists".

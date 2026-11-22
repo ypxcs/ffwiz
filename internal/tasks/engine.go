@@ -89,6 +89,12 @@ type Resolution struct {
 	// show alongside a target-size question. Steps that are not calculated have
 	// no entry.
 	Notes map[string]string
+
+	// ExpectedSizeBytes is how large the output is expected to be, or 0 when
+	// nothing can say. Only a target-size step makes the answer knowable before
+	// the run; the disk-space warning is built on it and does nothing without it
+	// (plan.md §8, "best effort").
+	ExpectedSizeBytes int64
 }
 
 // Resolve walks the task's steps in order and works out which are active.
@@ -191,6 +197,10 @@ func (e *Engine) Resolve(raw map[string]string) Resolution {
 				// shows next to the question (plan.md §5.2).
 				if plan, err := e.planBitrate(step, res.Answers); err == nil {
 					res.Notes[step.ID] = planNote(plan)
+					// The answer is a target size in MiB, which is the one
+					// case where the output's size can be known before the run
+					// - the disk-space warning is built from it (plan.md §8).
+					res.ExpectedSizeBytes = plan.TargetBytes
 				}
 			}
 		}

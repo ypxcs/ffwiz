@@ -86,6 +86,11 @@ type Deps struct {
 	// concatenation list. Empty means the system temporary directory; the
 	// wizard a user runs passes a directory it cleans up on exit (plan.md §8).
 	TempDir string
+	// FreeSpace reports the bytes available on the filesystem holding a
+	// directory. Nil means ffmpeg.FreeSpace, which is only implemented on
+	// Unix; it returns an error elsewhere and the disk-space warning is simply
+	// not shown (plan.md §8, "best effort").
+	FreeSpace func(dir string) (int64, error)
 	// Run starts ffmpeg. Nil means use ffmpeg.Start.
 	Run Runner
 	// Reveal shows a file in the desktop's file manager, best effort. Nil means
@@ -109,6 +114,7 @@ type Model struct {
 	clip    Clipboard
 	timeout time.Duration
 	tempDir string
+	space   func(dir string) (int64, error)
 
 	width, height int
 	screen        Screen
@@ -226,6 +232,12 @@ func New(deps Deps) Model {
 	if clip == nil {
 		clip = UnavailableClipboard{}
 	}
+	// Likewise a nil FreeSpace: the disk-space warning asks a function that
+	// answers "unknown" where the platform cannot (plan.md §8).
+	space := deps.FreeSpace
+	if space == nil {
+		space = ffmpeg.FreeSpace
+	}
 
 	m := Model{
 		styles:  NewStyles(deps.IsDark),
@@ -239,6 +251,7 @@ func New(deps Deps) Model {
 		reveal:  deps.Reveal,
 		timeout: deps.ProbeTimeout,
 		tempDir: deps.TempDir,
+		space:   space,
 		answers: map[string]string{},
 		width:   80,
 		height:  24,

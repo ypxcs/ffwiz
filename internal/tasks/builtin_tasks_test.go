@@ -111,6 +111,48 @@ func TestCompressVideoCommands(t *testing.T) {
 	}
 }
 
+// TestTargetSizeIsTheExpectedOutputSize: a target-size step is the one place the
+// output's size is knowable before the run, and the figure is what plan.md §8's
+// disk-space warning compares with the free space on the output's filesystem.
+//
+// A CRF encode deliberately reports nothing: its size depends on the material,
+// and a guess that is wrong half the time teaches the user to ignore warnings.
+func TestTargetSizeIsTheExpectedOutputSize(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("compress_video")
+
+	tests := []struct {
+		name    string
+		answers map[string]string
+		want    int64
+	}{
+		{name: "the default CRF encode reports nothing"},
+		{
+			name:    "10 MiB is 10 MiB",
+			answers: map[string]string{"method": "size", "size": "10"},
+			want:    10 * 1024 * 1024,
+		},
+		{
+			name:    "the target follows the answer, not the default",
+			answers: map[string]string{"method": "size", "size": "50"},
+			want:    50 * 1024 * 1024,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps()}
+			_, res, err := eng.Build(tc.answers, BuildOptions{Input: "av.mp4"})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if res.ExpectedSizeBytes != tc.want {
+				t.Errorf("ExpectedSizeBytes = %d, want %d", res.ExpectedSizeBytes, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractAudioCommands(t *testing.T) {
 	set := loadBuiltin(t)
 	tests := []struct {
@@ -632,6 +674,119 @@ func TestTasksHideOptionsTheBuildCannotDo(t *testing.T) {
 	}
 	if got := res.Answers["format"]; got != "m4a" {
 		t.Errorf("format = %q, want the next available one (m4a)", got)
+	}
+}
+
+// TestHardwareEncodersAreOfferedOnlyWhenPresent covers plan.md §7: a hardware
+// encoder is offered only when this build has it *and* the machine can run it.
+//
+// The first case is an ordinary CPU-only build, so the hardware rows must be
+// absent and the hidden-choices list must be able to say why (plan.md §11's
+// "Why is X missing?").
+func TestHardwareEncodersAreOfferedOnlyWhenPresent(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("convert_video")
+
+	// withEncoders adds encoders to an otherwise ordinary build.
+	withEncoders := func(names ...string) *ffmpeg.Capabilities {
+		caps := machineCaps()
+		for _, n := range names {
+			caps.Encoders[n] = n
+		}
+		return caps
+	}
+
+	tests := []struct {
+		name    string
+		caps    *ffmpeg.Capabilities
+		goos    string
+		want    string // a choice value that must be offered
+		notWant string // a choice value that must not be
+	}{
+		{
+			name:    "a build with no hardware encoder offers none",
+			caps:    withEncoders(),
+			goos:    "darwin",
+			notWant: "h264_videotoolbox",
+		},
+		{
+			name: "VideoToolbox on macOS",
+			caps: withEncoders("h264_videotoolbox"),
+			goos: "darwin",
+			want: "h264_videotoolbox",
+		},
+		{
+			// ffmpeg lists the encoders a binary was built with, but the API
+			// only exists on Apple platforms, so a build that lists one on
+			// Linux still cannot run it (DECISIONS D33).
+			name:    "VideoToolbox is not offered on Linux",
+			caps:    withEncoders("h264_videotoolbox"),
+			goos:    "linux",
+			notWant: "h264_videotoolbox",
+		},
+		{
+			name: "NVENC needs no platform condition",
+			caps: withEncoders("h264_nvenc"),
+			goos: "linux",
+			want: "h264_nvenc",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &Engine{Task: task, Info: videoWithAudio(), Caps: tc.caps, Platform: tc.goos}
+			_, res, err := eng.Build(nil, BuildOptions{Input: "av.mp4"})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			offered := map[string]bool{}
+			for _, c := range res.Shown["vcodec"] {
+				offered[c.Value] = true
+			}
+			if tc.want != "" && !offered[tc.want] {
+				t.Errorf("%s is not offered; offered: %v", tc.want, res.Shown["vcodec"])
+			}
+			if tc.notWant != "" && offered[tc.notWant] {
+				t.Errorf("%s is offered but cannot run here", tc.notWant)
+			}
+		})
+	}
+}
+
+// TestHardwareEncoderChoiceEmitsOneCodec: the hardware option *is* a codec
+// answer, so the command names one encoder and the software quality step - whose
+// CRF means nothing to a hardware encoder - stays out of it (DECISIONS D42).
+func TestHardwareEncoderChoiceEmitsOneCodec(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("convert_video")
+
+	caps := machineCaps()
+	caps.Encoders["h264_videotoolbox"] = "VideoToolbox H.264"
+	eng := &Engine{Task: task, Info: videoWithAudio(), Caps: caps, Platform: "darwin"}
+	cmd, res, err := eng.Build(map[string]string{"vcodec": "h264_videotoolbox"}, BuildOptions{Input: "av.mp4"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	args := cmd.DisplayArgs()
+	codecs := 0
+	for i, a := range args {
+		if a == "-c:v" && i+1 < len(args) {
+			codecs++
+		}
+		if a == "-crf" {
+			t.Errorf("the command carries a software CRF setting: %v", args)
+		}
+	}
+	if codecs != 1 {
+		t.Errorf("the command names %d video codecs, want 1: %v", codecs, args)
+	}
+	if !slices.Contains(args, "h264_videotoolbox") {
+		t.Errorf("the command does not use the hardware encoder: %v", args)
+	}
+	// The software quality step is for the software codec only.
+	if _, active := res.Answers["quality_h264"]; active {
+		t.Errorf("the software quality step is still active: %v", res.Answers)
 	}
 }
 

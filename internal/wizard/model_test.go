@@ -668,6 +668,99 @@ func TestWizardRefusesAFolderItCannotWriteTo(t *testing.T) {
 	}
 }
 
+// TestWizardWarnsWhenTheTargetWillNotFit covers plan.md §8's disk-space check,
+// which the plan itself calls "best effort".
+//
+// A warning is only honest when the size is knowable, and the one answer that
+// makes it knowable is a target size: the engine works the bitrate out from the
+// clip's length, so it also knows what the file is meant to weigh (DECISIONS
+// D43). A quality (CRF) encode can be any size at all, so it says nothing.
+func TestWizardWarnsWhenTheTargetWillNotFit(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "clip.mp4")
+
+	tests := []struct {
+		name    string
+		free    int64
+		freeErr error
+		want    string
+		notWant string
+	}{
+		{
+			name: "room to spare",
+			free: 8 << 30,
+			want: "The target is 25.0 MiB; the folder has 8.0 GiB free.",
+		},
+		{
+			// The target is the default 25 MiB and the folder has 1 MiB.
+			name: "the folder is too small",
+			free: 1 << 20,
+			want: "only 1.0 MiB free",
+		},
+		{
+			// Best effort: a platform that cannot answer, or a folder that has
+			// gone away, leaves the screen as it was rather than printing a
+			// number that was guessed.
+			name:    "an unknown free space says nothing",
+			freeErr: errors.New("not implemented here"),
+			notWant: "The target is",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := machineCaps()
+			s := newSession(t, Deps{
+				Set:       builtinSet(t),
+				Caps:      &caps,
+				Clipboard: &fakeClipboard{},
+				FreeSpace: func(string) (int64, error) { return tc.free, tc.freeErr },
+			})
+			s.send(probeMsg{path: input, info: avInfo()})
+			s.startTask("compress_video")
+			// method: the target-size branch is the second answer.
+			s.press("down")
+			// codec, audio, size, container, then the output screen.
+			s.press("enter", "enter", "enter", "enter", "enter")
+
+			if s.model.screen != ScreenOutput {
+				t.Fatalf("screen = %v, want the output screen", s.model.screen)
+			}
+			view := s.view()
+			if tc.want != "" && !strings.Contains(view, tc.want) {
+				t.Errorf("the screen does not say %q:\n%s", tc.want, view)
+			}
+			if tc.notWant != "" && strings.Contains(view, tc.notWant) {
+				t.Errorf("the screen claims to know the size:\n%s", view)
+			}
+		})
+	}
+}
+
+// TestWizardDoesNotGuessTheSizeOfAQualityEncode: a CRF encode's size depends on
+// the material, so the output screen shows no estimate at all. The same screen
+// never warns about space the user has (plan.md §8).
+func TestWizardDoesNotGuessTheSizeOfAQualityEncode(t *testing.T) {
+	dir := t.TempDir()
+	caps := machineCaps()
+	s := newSession(t, Deps{
+		Set:       builtinSet(t),
+		Caps:      &caps,
+		Clipboard: &fakeClipboard{},
+		FreeSpace: func(string) (int64, error) { return 1 << 20, nil },
+	})
+	s.send(probeMsg{path: filepath.Join(dir, "clip.mp4"), info: avInfo()})
+	s.startTask("convert_video")
+	s.press("enter", "enter", "enter", "enter")
+
+	if s.model.screen != ScreenOutput {
+		t.Fatalf("screen = %v, want the output screen", s.model.screen)
+	}
+	if view := s.view(); strings.Contains(view, "The target is") {
+		t.Errorf("the screen guesses a size for a CRF encode:\n%s", view)
+	}
+}
+
 // TestWizardWillNotStartWhenTheOutputAppeared: a file created after the review// screen must not be overwritten by a run, and -n would silently do nothing
 // (DECISIONS D9), so the wizard asks again instead.
 func TestWizardWillNotStartWhenTheOutputAppeared(t *testing.T) {
