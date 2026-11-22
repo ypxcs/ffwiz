@@ -49,6 +49,9 @@ func (t *Task) validate() []error {
 	if len(t.Steps) == 0 {
 		errs = append(errs, at("has no steps"))
 	}
+	if t.RequiresFilter != "" && !capabilityNameRe.MatchString(t.RequiresFilter) {
+		errs = append(errs, at("implausible requires_filter %q", t.RequiresFilter))
+	}
 
 	stepIDs := make(map[string]int, len(t.Steps))
 	for i, step := range t.Steps {
@@ -69,11 +72,16 @@ func (t *Task) validate() []error {
 	return errs
 }
 
-// videoFilterSteps returns, in task order, the ids of steps whose choices
-// contribute a simple video filter.
+// videoFilterSteps returns, in task order, the ids of steps that contribute a
+// simple video filter - either through one of their choices or, for an input
+// step, through filters of their own.
 func (t *Task) videoFilterSteps() []string {
 	var ids []string
 	for _, step := range t.Steps {
+		if len(step.Filters) > 0 && step.Target != FilterAudio {
+			ids = append(ids, step.ID)
+			continue
+		}
 		for _, c := range step.Choices {
 			if len(c.Filters) > 0 && c.Target != FilterAudio {
 				ids = append(ids, step.ID)
@@ -82,6 +90,17 @@ func (t *Task) videoFilterSteps() []string {
 		}
 	}
 	return ids
+}
+
+// containsPlaceholder reports whether any of the templates uses {name}.
+func containsPlaceholder(templates []string, name string) bool {
+	want := "{" + name + "}"
+	for _, t := range templates {
+		if strings.Contains(t, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateFilterGraphs enforces the rule that a complex filtergraph and simple
@@ -257,25 +276,20 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 				errs = append(errs, at("args entry %d is empty", j))
 			}
 		}
-		if step.Target != "" && step.Target != FilterVideo && step.Target != FilterAudio {
-			errs = append(errs, at("unknown filter target %q", step.Target))
-		}
-		if step.Target == FilterAudio && len(step.Filters) == 0 {
-			errs = append(errs, at("target: audio without any filters"))
-		}
-		if step.Custom {
-			errs = append(errs, at("custom is only meaningful for type resolution"))
-		}
 
 	case StepInput, StepTimeRange:
 		if len(step.Choices) > 0 {
 			errs = append(errs, at("type %s must not declare choices", step.Type))
 		}
-		if step.Custom {
-			errs = append(errs, at("custom is only meaningful for type resolution"))
-		}
-		if len(step.Args) > 0 || len(step.Filters) > 0 {
+		if len(step.Args) > 0 {
 			errs = append(errs, at("type %s contributes through its template, not args", step.Type))
+		}
+		if len(step.Filters) > 0 && step.Type == StepInput && !containsPlaceholder(step.Filters, "value") {
+			// A filter on an input step is a template, so a step that forgets
+			// the placeholder would silently contribute a constant filter while
+			// its answer went nowhere - the answer typed into the question would
+			// have no effect on the command.
+			errs = append(errs, at("filters on an input step must use {value}; without it the answer never reaches the command"))
 		}
 
 	case "":
@@ -287,7 +301,11 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 
 	// Templates must only use the placeholders their type provides; anything
 	// else would be emitted literally into a command line.
-	for _, tmpl := range [][]string{step.Template, step.InputTemplate} {
+	templates := [][]string{step.Template, step.InputTemplate}
+	if step.Type == StepInput {
+		templates = append(templates, step.Filters)
+	}
+	for _, tmpl := range templates {
 		for _, arg := range tmpl {
 			for _, m := range placeholderRe.FindAllStringSubmatch(arg, -1) {
 				if !validPlaceholder(step.Type, m[1]) {
@@ -296,6 +314,40 @@ func (t *Task) validateStep(i int, stepIDs map[string]int) []error {
 				}
 			}
 		}
+	}
+
+	if step.Target != "" && step.Target != FilterVideo && step.Target != FilterAudio {
+		errs = append(errs, at("unknown filter target %q", step.Target))
+	}
+	if step.Target == FilterAudio && len(step.Filters) == 0 {
+		errs = append(errs, at("target: audio without any filters"))
+	}
+	if step.Target != "" && len(step.Filters) == 0 {
+		errs = append(errs, at("target is only meaningful with filters"))
+	}
+
+	// A step contributes to a filter chain either as a template (an input step,
+	// expanded and escaped by the engine) or literally (a confirm step). Every
+	// other type's filters would never be emitted at all.
+	switch step.Type {
+	case StepInput, StepConfirm:
+	default:
+		if len(step.Filters) > 0 {
+			errs = append(errs, at("filters are only meaningful for an input or confirm step, not %s", step.Type))
+		}
+	}
+	if step.Type == StepConfirm {
+		// A confirm's filters are literal, so a placeholder in one would be
+		// written into the command line unexpanded.
+		for _, f := range step.Filters {
+			if placeholderRe.MatchString(f) {
+				errs = append(errs, at("a confirm step's filters are literal; %q contains a placeholder", f))
+			}
+		}
+	}
+
+	if step.Custom && step.Type != StepResolution {
+		errs = append(errs, at("custom is only meaningful for type resolution"))
 	}
 	if len(step.InputTemplate) > 0 && step.Type == StepChoice {
 		errs = append(errs, at("input_template is only meaningful for input-style steps, not %s", step.Type))

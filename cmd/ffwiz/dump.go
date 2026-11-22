@@ -104,7 +104,7 @@ func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags)
 
 	engine := &tasks.Engine{Task: task, Info: info, Caps: caps}
 
-	if applies, reason := task.Applies(info); !applies {
+	if applies, reason := task.AppliesTo(info, caps); !applies {
 		fmt.Fprintf(out, "warning: this task %s\n\n", reason)
 	}
 
@@ -132,9 +132,15 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 	fmt.Fprintf(out, "\nsteps\n")
 	for _, step := range res.Active {
 		answer := res.Answers[step.ID]
-		source := "answered"
-		if _, given := flags.Answers[step.ID]; !given {
-			source = "default"
+		_, given := flags.Answers[step.ID]
+		source := "default"
+		switch {
+		case res.Pending[step.ID]:
+			// No answer and no default: a question the user still has to answer
+			// before there is a command (DECISIONS D23).
+			source = "pending"
+		case given:
+			source = "answered"
 		}
 		fmt.Fprintf(out, "  %-14s %-8s %s=%q\n", step.ID, source, step.Type, answer)
 	}
@@ -251,11 +257,11 @@ func describeInput(info *ffmpeg.MediaInfo) string {
 }
 
 // runList prints the task catalogue, with each task marked when it does not
-// apply to the probed input.
-func runList(out io.Writer, set *tasks.Set, info *ffmpeg.MediaInfo) {
+// apply to the probed input or to this ffmpeg build.
+func runList(out io.Writer, set *tasks.Set, info *ffmpeg.MediaInfo, caps *ffmpeg.Capabilities) {
 	for _, task := range set.Tasks {
 		marker := ""
-		if applies, reason := task.Applies(info); !applies {
+		if applies, reason := task.AppliesTo(info, caps); !applies {
 			marker = "  [" + reason + "]"
 		}
 		fmt.Fprintf(out, "%-18s %s%s\n", task.ID, task.Label, marker)

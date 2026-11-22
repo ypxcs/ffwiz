@@ -82,7 +82,8 @@ var ErrValueRequired = errors.New("a value is required")
 
 // RequiresValue reports whether the step must have a non-empty answer before it
 // can be left. A step that contributes arguments cannot be left blank: the
-// template would emit an empty string straight into the command line.
+// template would emit an empty string straight into the command line, and a
+// step that contributes a filter would silently contribute nothing.
 //
 // A confirm never requires a value: it is a toggle, and an unanswered toggle
 // means "no" rather than "ask me again" (see selectConfirm).
@@ -91,7 +92,7 @@ func (s Step) RequiresValue() bool {
 	case StepChoice, StepMulti, StepConfirm:
 		return true
 	default:
-		return len(s.Template) > 0 || len(s.InputTemplate) > 0
+		return len(s.Template) > 0 || len(s.InputTemplate) > 0 || len(s.Filters) > 0
 	}
 }
 

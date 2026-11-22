@@ -64,7 +64,7 @@ func (m Model) updateInput(msg tea.Msg, isKey bool, keyMsg tea.KeyPressMsg) (tea
 	if m.chosen {
 		if isKey && key.Matches(keyMsg, m.keys.Select) {
 			m.screen = ScreenTask
-			m.taskIndex = 0
+			m.taskIndex = m.firstRunnableTask()
 			m.notice, m.noticeIsError = "", false
 			return m, nil
 		}

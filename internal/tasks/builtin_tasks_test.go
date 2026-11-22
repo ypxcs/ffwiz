@@ -42,7 +42,7 @@ func TestCatalogueCoversThePlannedTasks(t *testing.T) {
 	}
 	for _, id := range []string{
 		"convert_video", "compress_video", "extract_audio", "trim", "resize",
-		"change_speed", "strip_metadata", "extract_frames", "gif",
+		"change_speed", "strip_metadata", "extract_frames", "gif", "burn_subtitles",
 	} {
 		if !have[id] {
 			t.Errorf("%s is missing from the catalogue (plan.md §5)", id)
@@ -342,6 +342,157 @@ func TestStripMetadataCommands(t *testing.T) {
 				t.Errorf("command =\n  %s\nwant\n  %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBurnSubtitlesCommands is the golden test for plan.md §5.8.
+//
+// The expected commands look odd because the subtitle path is quoted twice: once
+// by EscapeFilterValue, which is what ffmpeg's filtergraph parser needs, and once
+// more by ffmpeg.Quote, which is what a shell needs. Both are load-bearing, and
+// the shell-level one is why the displayed command can be pasted as-is (D27).
+func TestBurnSubtitlesCommands(t *testing.T) {
+	set := loadBuiltin(t)
+	tests := []struct {
+		name    string
+		info    *ffmpeg.MediaInfo
+		answers map[string]string
+		want    string
+	}{
+		{
+			name:    "defaults re-encode the picture and the sound",
+			answers: map[string]string{"subs": "subs.srt"},
+			want: "ffmpeg -n -i av.mp4 -vf 'subtitles=filename='\\''subs.srt'\\''' " +
+				"-c:v libx264 -crf 23 -preset medium -c:a aac -b:a 192k av_burn_subtitles.mp4",
+		},
+		{
+			name:    "a higher quality keeps the original audio",
+			answers: map[string]string{"subs": "/films/sub titles.ass", "quality": "high", "audio": "copy"},
+			want: "ffmpeg -n -i av.mp4 -vf 'subtitles=filename='\\''/films/sub titles.ass'\\''' " +
+				"-c:v libx264 -crf 18 -preset medium -c:a copy av_burn_subtitles.mp4",
+		},
+		{
+			name:    "the audio can be dropped",
+			answers: map[string]string{"subs": "subs.srt", "quality": "small", "audio": "none"},
+			want: "ffmpeg -n -i av.mp4 -vf 'subtitles=filename='\\''subs.srt'\\''' " +
+				"-c:v libx264 -crf 28 -preset medium -an av_burn_subtitles.mp4",
+		},
+		{
+			// A file with no audio stream asks nothing about audio, and the
+			// picture still has to be re-encoded.
+			name:    "a file with no audio stream",
+			info:    videoWithoutAudio(),
+			answers: map[string]string{"subs": "subs.srt"},
+			want:    "ffmpeg -n -i av.mp4 -vf 'subtitles=filename='\\''subs.srt'\\''' -c:v libx264 -crf 23 -preset medium av_burn_subtitles.mp4",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			info := tc.info
+			if info == nil {
+				info = videoWithAudio()
+			}
+			cmd := buildTask(t, set, "burn_subtitles", info, tc.answers)
+			if got := cmd.String(); got != tc.want {
+				t.Errorf("command =\n  %s\nwant\n  %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBurnSubtitlesEscapesThePathInTheFilter checks what ffmpeg actually
+// receives, rather than the shell-quoted rendering. The path goes inside a
+// filter argument, where a comma, a colon or an apostrophe is syntax unless it
+// is escaped, and getting this wrong is how the task would burn the wrong file -
+// or fail with a message about a filter option that does not exist.
+func TestBurnSubtitlesEscapesThePathInTheFilter(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("burn_subtitles")
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "a plain path",
+			path: "subs.srt",
+			want: "subtitles=filename='subs.srt'",
+		},
+		{
+			name: "a space needs the quoting",
+			path: "/films/sub titles.ass",
+			want: "subtitles=filename='/films/sub titles.ass'",
+		},
+		{
+			name: "an apostrophe closes and reopens the quoting",
+			path: "/films/My Movie's subs.srt",
+			want: `subtitles=filename='/films/My Movie'\\\''s subs.srt'`,
+		},
+		{
+			name: "a colon is escaped inside the quoting",
+			path: "C:/subs/en:forced.srt",
+			want: `subtitles=filename='C\:/subs/en\:forced.srt'`,
+		},
+		{
+			name: "a comma would otherwise split the filtergraph",
+			path: "sub,title.srt",
+			want: "subtitles=filename='sub,title.srt'",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &Engine{Task: task, Info: videoWithAudio(), Caps: machineCaps()}
+			cmd, _, err := eng.Build(map[string]string{"subs": tc.path}, BuildOptions{Input: "av.mp4"})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			// -vf's value is the argument after the flag.
+			args := cmd.Args()
+			for i, a := range args {
+				if a == "-vf" && i+1 < len(args) {
+					if got := args[i+1]; got != tc.want {
+						t.Errorf("-vf = %q, want %q", got, tc.want)
+					}
+					return
+				}
+			}
+			t.Errorf("-vf is missing from %v", args)
+		})
+	}
+}
+
+// TestBurnSubtitlesIsNotOfferedWithoutLibass covers the capability gate: the
+// task's whole purpose is the subtitles filter, so a build without it must say
+// so rather than fail at run time (DECISIONS D17, D39).
+func TestBurnSubtitlesIsNotOfferedWithoutLibass(t *testing.T) {
+	set := loadBuiltin(t)
+	task, _ := set.Get("burn_subtitles")
+
+	// machineCaps has no libass, which is what a stock Homebrew ffmpeg looks
+	// like; TestIntegrationCapabilitiesMatchRawListings keeps that claim honest.
+	ok, reason := task.AppliesTo(videoWithAudio(), machineCaps())
+	if ok {
+		t.Error("burn_subtitles applies to a build without the subtitles filter")
+	}
+	if !strings.Contains(reason, "subtitles") {
+		t.Errorf("reason = %q, want it to name the missing filter", reason)
+	}
+
+	// With the filter present - a build with libass - the task is offered.
+	caps := machineCaps()
+	caps.Filters["subtitles"] = struct{}{}
+	if ok, reason := task.AppliesTo(videoWithAudio(), caps); !ok {
+		t.Errorf("burn_subtitles does not apply to a build with libass: %s", reason)
+	}
+
+	// And an audio-only file is still refused for the reason the file gives.
+	if ok, reason := task.AppliesTo(&ffmpeg.MediaInfo{
+		Streams: []ffmpeg.StreamInfo{{Index: 0, Type: ffmpeg.StreamAudio, CodecName: "mp3"}},
+	}, caps); ok || !strings.Contains(reason, "video stream") {
+		t.Errorf("AppliesTo(audio only) = %v, %q", ok, reason)
 	}
 }
 

@@ -311,6 +311,131 @@ func indexOf(list []string, want string) int {
 
 func containsString(list []string, want string) bool { return indexOf(list, want) >= 0 }
 
+// ── input steps that feed a filter ──────────────────────────────────────────
+
+// subtitleSession opens the shipped burn_subtitles task, with the subtitles
+// filter pretended into the capability set: the stock Homebrew build has no
+// libass, and the task is not offered at all without it.
+func subtitleSession(t *testing.T) *session {
+	t.Helper()
+	caps := machineCaps()
+	caps.Filters["subtitles"] = struct{}{}
+	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps, Clipboard: &fakeClipboard{}})
+	s.send(probeMsg{path: "/tmp/clip.mp4", info: avInfo()})
+	s.startTask("burn_subtitles")
+	if s.model.screen != ScreenStep {
+		t.Fatalf("screen = %v, want the first step", s.model.screen)
+	}
+	return s
+}
+
+// typeText sends one keystroke per rune, because that is how a terminal
+// delivers them.
+func typeText(s *session, text string) {
+	s.t.Helper()
+	for _, r := range text {
+		if r == ' ' {
+			s.press("space")
+			continue
+		}
+		s.press(string(r))
+	}
+}
+
+// TestSubtitleStepRefusesAFileThatIsNotASubtitle: the filter picks its parser
+// from the extension, so anything else is a typo, and a typo that reaches ffmpeg
+// is a failed run rather than a corrected answer.
+func TestSubtitleStepRefusesAFileThatIsNotASubtitle(t *testing.T) {
+	s := subtitleSession(t)
+	typeText(s, "notes.txt")
+	s.press("enter")
+
+	if step, _ := s.model.currentStep(); step.ID != "subs" {
+		t.Errorf("the wizard moved on to %q, want it to stay on the subtitle question", step.ID)
+	}
+	if s.model.notice == "" {
+		t.Fatal("a non-subtitle file was accepted without a word")
+	}
+	if !strings.Contains(s.model.notice, "srt") {
+		t.Errorf("notice = %q, want it to name what is expected", s.model.notice)
+	}
+	if s.model.answers["subs"] != "" {
+		t.Errorf("subs = %q, want the answer to be refused", s.model.answers["subs"])
+	}
+}
+
+// TestSubtitleStepEscapesThePathIntoTheFilter is the end-to-end version of
+// EscapeFilterValue's own test: the typed path has to arrive inside the filter
+// argument escaped, or the preview would show a command that burns the wrong
+// file - or fails with a message about a filter option that does not exist.
+func TestSubtitleStepEscapesThePathIntoTheFilter(t *testing.T) {
+	s := subtitleSession(t)
+	typeText(s, "my subs.srt")
+	s.press("enter")
+
+	if s.model.notice != "" {
+		t.Fatalf("the answer was refused: %s", s.model.notice)
+	}
+	if got := s.model.answers["subs"]; got != "my subs.srt" {
+		t.Fatalf("subs = %q, want the typed path accepted", got)
+	}
+	if step, _ := s.model.currentStep(); step.ID == "subs" {
+		t.Error("the wizard is still on the subtitle question after an answer")
+	}
+
+	cmd, _, err := s.model.liveCommand()
+	if err != nil || cmd == nil {
+		t.Fatalf("liveCommand: %v", err)
+	}
+	const want = "subtitles=filename='my subs.srt'"
+	args := cmd.Args()
+	for i, a := range args {
+		if a == "-vf" && i+1 < len(args) {
+			if got := args[i+1]; got != want {
+				t.Errorf("-vf = %q, want %q", got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("-vf is missing from %v", args)
+}
+
+// TestBurnSubtitlesIsRefusedWithoutLibass: a task whose only purpose is a filter
+// this build does not have must not be startable, and the reason has to say so
+// (DECISIONS D17, D39).
+func TestBurnSubtitlesIsRefusedWithoutLibass(t *testing.T) {
+	caps := machineCaps() // no subtitles filter, like the local Homebrew build
+	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps, Clipboard: &fakeClipboard{}})
+	s.send(probeMsg{path: "/tmp/clip.mp4", info: avInfo()})
+	s.press("enter") // the input summary
+
+	var entry taskEntry
+	for _, e := range s.model.taskEntries() {
+		if e.task.ID == "burn_subtitles" {
+			entry = e
+		}
+	}
+	if entry.task.ID == "" {
+		t.Fatal("burn_subtitles is missing from the task list")
+	}
+	if entry.applies {
+		t.Error("burn_subtitles is offered by a build without the subtitles filter")
+	}
+	if !strings.Contains(entry.reason, "subtitles") {
+		t.Errorf("reason = %q, want it to name the missing filter", entry.reason)
+	}
+
+	s.startTask("burn_subtitles")
+	if s.model.screen == ScreenStep {
+		t.Error("the wizard started a task that cannot run")
+	}
+	if !strings.Contains(s.model.notice, "subtitles") {
+		t.Errorf("notice = %q, want it to explain why", s.model.notice)
+	}
+}
+
+// ── layout ──────────────────────────────────────────────────────────────────
+
 // TestStepScreenFitsEightyColumns renders every step type at the 80x24 minimum
 // plan.md §6 requires, so a wide checkbox or custom field cannot break the
 // layout.

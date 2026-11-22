@@ -266,6 +266,10 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 		wantFiles int
 		// check is run on the probed output of an ordinary file.
 		check func(t *testing.T, got *ffmpeg.MediaInfo)
+		// needFilter skips the case when this ffmpeg filter is missing. It is
+		// how a task whose whole purpose is one filter is tested where that
+		// filter exists, without failing where it does not (DECISIONS D17).
+		needFilter string
 	}{
 		{
 			name:  "compress: the default CRF encode",
@@ -447,10 +451,29 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 				wantDurationNear(t, got, time.Second, 300*time.Millisecond)
 			},
 		},
+		{
+			// The escaped path is the point of this case. `make samples` writes
+			// subs.srt with plain content; the awkward-name coverage for filter
+			// arguments lives in internal/ffmpeg, which asks ffmpeg about every
+			// character at once through the movie filter.
+			name:       "burn subtitles: re-encoded with the text drawn on",
+			task:       "burn_subtitles",
+			answers:    map[string]string{"subs": "../../ffmpeg/testdata/generated/subs.srt"},
+			input:      "av.mp4",
+			out:        "mp4",
+			needFilter: "subtitles",
+			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
+				wantStream(t, got, ffmpeg.StreamVideo, "h264")
+				wantStream(t, got, ffmpeg.StreamAudio, "aac")
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.needFilter != "" && !caps.HasFilter(tc.needFilter) {
+				t.Skipf("this ffmpeg has no %s filter (usually a build without libass)", tc.needFilter)
+			}
 			input := requireSample(t, tc.input)
 			info, err := ffmpeg.Probe(context.Background(), tools.FFprobe, input)
 			if err != nil {

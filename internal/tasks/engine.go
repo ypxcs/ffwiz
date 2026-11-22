@@ -413,18 +413,36 @@ func (e *Engine) Unavailable(c Choice) string { return e.unavailable(c) }
 // Applies reports whether a task can run against an input at all, plus a reason
 // when it cannot. A task that requires video is meaningless for an MP3, and the
 // task list must say why rather than offering a broken flow (plan.md §11).
+//
+// It says nothing about the local ffmpeg build; use AppliesTo for that.
 func (t Task) Applies(info *ffmpeg.MediaInfo) (bool, string) {
-	if info == nil {
-		return true, ""
+	return t.AppliesTo(info, nil)
+}
+
+// AppliesTo additionally checks the task's capability requirement against the
+// local build. A nil caps means "assume everything is present", which is what a
+// task list before detection has to assume.
+//
+// The input and the build are checked together because they produce the same
+// user-facing answer - "can I do this?" - and the task list shows one reason.
+// The build is checked second: a task that the file cannot support at all is the
+// more useful explanation.
+func (t Task) AppliesTo(info *ffmpeg.MediaInfo, caps *ffmpeg.Capabilities) (bool, string) {
+	if info != nil {
+		if t.Requires.Video && !info.Has(ffmpeg.StreamVideo) {
+			return false, "needs an input with a video stream"
+		}
+		if t.Requires.Audio && !info.Has(ffmpeg.StreamAudio) {
+			return false, "needs an input with an audio stream"
+		}
+		if t.Requires.Subtitles && !info.Has(ffmpeg.StreamSubtitle) {
+			return false, "needs an input with a subtitle stream"
+		}
 	}
-	if t.Requires.Video && !info.Has(ffmpeg.StreamVideo) {
-		return false, "needs an input with a video stream"
-	}
-	if t.Requires.Audio && !info.Has(ffmpeg.StreamAudio) {
-		return false, "needs an input with an audio stream"
-	}
-	if t.Requires.Subtitles && !info.Has(ffmpeg.StreamSubtitle) {
-		return false, "needs an input with a subtitle stream"
+	if caps != nil && t.RequiresFilter != "" && !caps.HasFilter(t.RequiresFilter) {
+		// Phrased to follow "this task ...", which is how both the task list and
+		// `--dump` introduce the reason.
+		return false, fmt.Sprintf("needs an ffmpeg with the %s filter, which this build does not have", t.RequiresFilter)
 	}
 	return true, ""
 }
@@ -609,6 +627,14 @@ func (e *Engine) assemble(raw map[string]string, opts BuildOptions, mode buildMo
 			outputArgs, inputArgs := templateArgs(step, res)
 			req.Inputs[0].Args = append(req.Inputs[0].Args, inputArgs...)
 			req.OutputArgs = append(req.OutputArgs, outputArgs...)
+			if len(step.Filters) > 0 {
+				filters := templatedFilters(step, res)
+				if step.Target == FilterAudio {
+					req.AudioFilters = append(req.AudioFilters, filters...)
+				} else {
+					req.VideoFilters = append(req.VideoFilters, filters...)
+				}
+			}
 		}
 	}
 
@@ -769,6 +795,24 @@ func templateArgs(step Step, res Resolution) (outputArgs, inputArgs []string) {
 		}
 	}
 	return expand(step.Template, vars), expand(step.InputTemplate, vars)
+}
+
+// templatedFilters expands a step's filters with the answer, escaping it for
+// filter syntax.
+//
+// The escaping is not cosmetic. A path goes inside a filter argument, where
+// ffmpeg parses two levels deep - the filtergraph level splits on "," and ";"
+// and reads "[label]" links, and the argument level splits "key:key" and
+// "key=value" - so a name containing any of those characters changes the meaning
+// of the filter unless it is escaped. EscapeFilterValue is where that lives, and
+// where it was measured (DECISIONS D39).
+func templatedFilters(step Step, res Resolution) []string {
+	answer := res.Answers[step.ID]
+	if answer == "" {
+		return nil
+	}
+	vars := map[string]string{"value": ffmpeg.EscapeFilterValue(answer)}
+	return expand(step.Filters, vars)
 }
 
 // planBitrate works out the bitrate plan for a compute step from its answer and

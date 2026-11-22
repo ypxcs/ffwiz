@@ -37,6 +37,12 @@ type Task struct {
 	Label       string   `yaml:"label"`
 	Description string   `yaml:"description"`
 	Requires    Requires `yaml:"requires"`
+	// RequiresFilter names an ffmpeg filter the whole task needs, so a build
+	// without it (notably one without libass, hence without `subtitles`) does
+	// not offer the task at all. Choice-level requires_filter cannot express
+	// this: the task's only step may be perfectly available while the thing the
+	// task is *for* is impossible (DECISIONS D17, D39).
+	RequiresFilter string `yaml:"requires_filter"`
 	// Disabled hides the task. A user override file can set this to remove a
 	// built-in task (DECISIONS D12).
 	Disabled bool   `yaml:"disabled"`
@@ -95,8 +101,14 @@ type Step struct {
 	// contribute through their templates or their choices.
 	Args []string `yaml:"args"`
 
-	// Filters and Target let a confirm step contribute to the merged -vf/-af
-	// chain, e.g. a "burn in the timecode" toggle.
+	// Filters and Target let a step contribute to the merged -vf/-af chain
+	// rather than to the plain argument list.
+	//
+	// A confirm step's filters are literal, e.g. a "burn in the timecode"
+	// toggle. An input step's filters are a *template*: {value} is replaced by
+	// the answer, escaped for filter syntax, which is how a subtitle file path
+	// gets inside `subtitles=filename={value}` without the YAML author having to
+	// know ffmpeg's two levels of escaping (DECISIONS D39).
 	Filters []string     `yaml:"filters"`
 	Target  FilterTarget `yaml:"target"`
 

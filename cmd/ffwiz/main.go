@@ -107,7 +107,15 @@ func run() error {
 
 	switch {
 	case *listTasks:
-		runList(os.Stdout, set, nil)
+		// The catalogue is marked up with what this build cannot run, so the
+		// listing needs the same capability detection the UI does. A failure to
+		// detect is not fatal here: the listing then claims nothing is missing.
+		caps, err := tools.Capabilities(ctx)
+		if err != nil {
+			logf("capability detection failed (%v); listing every task as runnable", err)
+			caps = ffmpeg.Capabilities{}
+		}
+		runList(os.Stdout, set, nil, &caps)
 		return nil
 	case *dumpTask != "":
 		answers, err := parseAnswers(answerFlags)

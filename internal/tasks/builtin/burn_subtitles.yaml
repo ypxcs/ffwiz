@@ -1,0 +1,82 @@
+# plan.md §5.8: "Burn in subtitles. Pick an .srt or .ass file, with safe path
+# escaping inside the filter."
+#
+# The subtitles filter takes a *filename option*, not a path argument, so a path
+# containing a comma, a colon or a quote changes the meaning of the filtergraph
+# unless it is escaped - and there are two levels of escaping, not one. The
+# `filters` entry below therefore writes {value} in the open, and the engine
+# replaces it with ffmpeg.EscapeFilterValue's work (DECISIONS D39). Writing the
+# escaping out here by hand is how every other tool in this space gets it wrong.
+#
+# Burning text into the picture means the video cannot be stream-copied: the
+# filter runs on decoded frames. That is why there is no "copy" option for the
+# video, unlike convert_video.
+- id: burn_subtitles
+  label: Burn in subtitles
+  description: Draw a subtitle file onto the picture, so the text shows everywhere.
+  requires: { video: true }
+  # A local build without libass has no subtitles filter at all, and a task whose
+  # one job is impossible must not be offered (DECISIONS D17, D39).
+  requires_filter: subtitles
+  steps:
+    - id: subs
+      prompt: Subtitle file
+      hint: An .srt or .ass file. Type a path, or drag the file into the terminal.
+      type: input
+      placeholder: "subtitles.srt"
+      validate:
+        # The filter picks its parser from the extension, so anything else is a
+        # typo rather than a format choice.
+        regex: '(?i)\.(srt|ass|ssa|vtt)$'
+      filters: ['subtitles=filename={value}']
+
+    - id: quality
+      prompt: Quality
+      hint: The picture is re-encoded, so this is the one choice that sets the size.
+      type: choice
+      choices:
+        - label: High (large file)
+          hint: Keeps the most detail.
+          value: high
+          args: ["-c:v", "libx264", "-crf", "18", "-preset", "medium"]
+          requires_encoder: libx264
+          output_ext: mp4
+        - label: Balanced (recommended)
+          hint: A good size for sharing.
+          value: balanced
+          args: ["-c:v", "libx264", "-crf", "23", "-preset", "medium"]
+          requires_encoder: libx264
+          output_ext: mp4
+          default: true
+        - label: Small file
+          hint: Softer picture, and less sharp subtitle text.
+          value: small
+          args: ["-c:v", "libx264", "-crf", "28", "-preset", "medium"]
+          requires_encoder: libx264
+          output_ext: mp4
+
+    # MP4 is the only container offered, and the default audio is a re-encode:
+    # copying an existing track into MP4 only works when that track already fits
+    # the container, and the engine cannot see the input's audio codec from a
+    # static definition (DECISIONS D21). Copying stays available, because it is
+    # the right answer for the common case of an MP4 source.
+    - id: audio
+      prompt: Audio
+      hint: Re-encoding is always safe; copying keeps the original exactly.
+      type: choice
+      when: { input_has: audio }
+      choices:
+        - label: Re-encode to AAC
+          hint: The most widely supported audio codec, and always legal in MP4.
+          value: aac
+          args: ["-c:a", "aac", "-b:a", "192k"]
+          requires_encoder: aac
+          default: true
+        - label: Keep as is (no re-encode)
+          hint: Instant and lossless, as long as the track fits an MP4.
+          value: copy
+          args: ["-c:a", "copy"]
+        - label: Remove audio
+          hint: Produces a silent video file.
+          value: none
+          args: ["-an"]

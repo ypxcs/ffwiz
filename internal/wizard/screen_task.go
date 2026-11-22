@@ -30,10 +30,23 @@ func (m Model) taskEntries() []taskEntry {
 		if t.Disabled {
 			continue
 		}
-		ok, reason := t.Applies(m.info)
+		ok, reason := t.AppliesTo(m.info, m.caps)
 		entries = append(entries, taskEntry{task: t, applies: ok, reason: reason})
 	}
 	return entries
+}
+
+// firstRunnableTask is where the cursor starts: the first task this input and
+// this build can actually run. Landing on a greyed-out row would put the
+// cursor - the most prominent position on the screen - on the one thing enter
+// refuses to start.
+func (m Model) firstRunnableTask() int {
+	for i, e := range m.taskEntries() {
+		if e.applies {
+			return i
+		}
+	}
+	return 0
 }
 
 // taskBody lists the catalogue.
@@ -87,7 +100,7 @@ func (m Model) hintTask() string {
 	}
 	e := entries[m.taskIndex]
 	if !e.applies {
-		return e.task.Label + " cannot run on this file: " + e.reason
+		return e.task.Label + " cannot run: " + e.reason
 	}
 	if e.task.Description != "" {
 		return e.task.Description
@@ -115,7 +128,7 @@ func (m Model) updateTask(keyMsg tea.KeyPressMsg, isKey bool) (tea.Model, tea.Cm
 		if !entry.applies {
 			// Offering a task that cannot run is how a wizard ends up emitting
 			// a command that fails at run time.
-			m.notice, m.noticeIsError = "this task cannot run on this file: "+entry.reason, true
+			m.notice, m.noticeIsError = "this task cannot run: "+entry.reason, true
 			return m, nil
 		}
 		m.startTask(entry.task.ID)

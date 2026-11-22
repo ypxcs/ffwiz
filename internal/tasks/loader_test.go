@@ -338,6 +338,50 @@ func TestLoadReportsBadYAML(t *testing.T) {
 			builtin: "- id: x\n  label: X\n  steps:\n    - id: a\n      prompt: A\n      type: choice\n      choices: [{ label: L, value: v, filter_complex: [\"[0:v]gif[out]\"], maps: [\"[out]\"] }]\n    - id: b\n      prompt: B\n      type: choice\n      choices: [{ label: M, value: w, filters: [\"scale=320:-1\"] }]\n",
 			want:    "cannot mix simple and complex filtering",
 		},
+		{
+			// An input step's filters are a template: without the placeholder
+			// the answer would never reach the command.
+			name:    "input filters without a placeholder",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: input, filters: [\"subtitles=filename=fixed.srt\"] }\n",
+			want:    "must use {value}",
+		},
+		{
+			name:    "input filters with an unknown placeholder",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: input, filters: [\"subtitles=filename={start}\"] }\n",
+			want:    "not available for type input",
+		},
+		{
+			name:    "filters on a time_range step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: time_range, filters: [\"subtitles=filename={value}\"] }\n",
+			want:    "only meaningful for an input or confirm step",
+		},
+		{
+			name:    "filters on a choice step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - id: a\n      prompt: A\n      type: choice\n      filters: [\"scale=320:-1\"]\n      choices: [{ label: L, value: v }]\n",
+			want:    "only meaningful for an input or confirm step",
+		},
+		{
+			// A confirm's filters are literal, so a placeholder would be written
+			// into the command unexpanded.
+			name:    "a placeholder in a confirm step's filters",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: confirm, filters: [\"drawtext=text={value}\"] }\n",
+			want:    "filters are literal",
+		},
+		{
+			name:    "a target without filters",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: confirm, target: video }\n",
+			want:    "only meaningful with filters",
+		},
+		{
+			name:    "an unknown target on an input step",
+			builtin: "- id: x\n  label: X\n  steps:\n    - { id: a, prompt: A, type: input, filters: [\"x={value}\"], target: sideways }\n",
+			want:    "unknown filter target",
+		},
+		{
+			name:    "an implausible requires_filter",
+			builtin: "- id: x\n  label: X\n  requires_filter: \"not a name\"\n  steps:\n    - { id: a, prompt: A, type: confirm }\n",
+			want:    "implausible requires_filter",
+		},
 	}
 
 	for _, tc := range tests {

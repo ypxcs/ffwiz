@@ -194,7 +194,7 @@ func (m Model) updateDone(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.
 		// "Run another task on the same input" (plan.md §6.8): the file is kept
 		// and only the answers are thrown away.
 		if m.set != nil {
-			m.taskIndex = 0
+			m.taskIndex = m.firstRunnableTask()
 			m.screen = ScreenTask
 			return m, nil
 		}

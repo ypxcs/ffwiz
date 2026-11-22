@@ -241,6 +241,100 @@ func TestIntegrationCapabilitiesMatchRawListings(t *testing.T) {
 	}
 }
 
+// TestEscapeFilterValueSurvivesRealFilenames is the verification behind
+// EscapeFilterValue's rules: every rule in that function is an assertion about
+// what ffmpeg's parsers do with a character, and the only way to know is to hand
+// ffmpeg a file with that character in its name.
+//
+// It goes through the `movie` filter rather than `subtitles` for one reason: this
+// ffmpeg build has no libass, so `subtitles` does not exist here and cannot be
+// tested at all. Both read their path from a filename option, which is the part
+// of the escaping being checked; the escaping is a property of the filtergraph
+// and filter-argument levels, which are the same for both.
+func TestEscapeFilterValueSurvivesRealFilenames(t *testing.T) {
+	tools := requireTools(t)
+	source := requireSample(t, "av.mp4")
+
+	// Every character class the escaper handles, plus a name that contains all
+	// of them at once.
+	names := []string{
+		"plain.mp4",
+		"sp ace.mp4",
+		" leading.mp4",
+		"trailing .mp4",
+		"tab\there.mp4",
+		"quote's.mp4",
+		"'leading-quote.mp4",
+		"trailing-quote'.mp4",
+		"double\"quote.mp4",
+		"back`tick.mp4",
+		"&and.mp4",
+		"ünïcodé.mp4",
+		"中文.mp4",
+		"-leading-dash.mp4",
+		"colon:name.mp4",
+		"eq=uals.mp4",
+		"two=eq=uals.mp4",
+		"brack[et].mp4",
+		"semi;i.mp4",
+		"com,ma.mp4",
+		"back\\slash.mp4",
+		"glob*.mp4",
+		"quest?mark.mp4",
+		"paren(s).mp4",
+		"pipe|a.mp4",
+		"angle<gt>.mp4",
+		"hash#tag.mp4",
+		"at@sign.mp4",
+		"plus+sign.mp4",
+		"dollar$sign.mp4",
+		"tilde~x.mp4",
+		"bang!.mp4",
+		"per%cent.mp4",
+		"all'of:them\\at[once];and=then,some.mp4",
+		"only-'=:.mp4",
+	}
+
+	dir := t.TempDir()
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, name)
+			blob, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatalf("reading the sample: %v", err)
+			}
+			if err := os.WriteFile(path, blob, 0o644); err != nil {
+				t.Fatalf("writing %q: %v", name, err)
+			}
+
+			// One frame through the movie source, so the name has to be read
+			// and opened exactly as written. Two spellings are used, because
+			// they behave differently: a bare value is read as a *shorthand*
+			// option (which is where an unescaped "=" breaks), and the explicit
+			// `filename=` form is the one the subtitles task writes, followed by
+			// another option the way a style option would be.
+			graph := "movie=" + EscapeFilterValue(path) + ",null[out]"
+			out := filepath.Join(t.TempDir(), "frame.png")
+			cmd := exec.Command(tools.FFmpeg, "-hide_banner", "-loglevel", "error",
+				"-f", "lavfi", "-i", "color=black:s=64x64:d=0.1",
+				"-filter_complex", graph, "-map", "[out]", "-frames:v", "1",
+				"-y", out)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("ffmpeg rejected %q as a shorthand value\ngraph: %s\n%s", name, graph, output)
+			}
+
+			graph = "movie=filename=" + EscapeFilterValue(path) + ":seek_point=0,null[out]"
+			cmd = exec.Command(tools.FFmpeg, "-hide_banner", "-loglevel", "error",
+				"-f", "lavfi", "-i", "color=black:s=64x64:d=0.1",
+				"-filter_complex", graph, "-map", "[out]", "-frames:v", "1",
+				"-y", out)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("ffmpeg rejected %q as a filename option\ngraph: %s\n%s", name, graph, output)
+			}
+		})
+	}
+}
+
 // TestIntegrationRunReportsRealProgress runs a real encode and reads the real
 // `-progress` stream. The parsing is unit-tested against recorded output; this
 // checks that the recording still matches what this ffmpeg actually writes, and

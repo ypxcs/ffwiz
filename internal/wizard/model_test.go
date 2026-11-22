@@ -721,12 +721,27 @@ func TestWizardRefusesATaskTheInputCannotSupport(t *testing.T) {
 	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps})
 	s.send(probeMsg{path: "song.mp3", info: audioOnly})
 	s.press("enter") // summary -> task list
-
 	if s.model.screen != ScreenTask {
 		t.Fatalf("screen = %v, want the task list", s.model.screen)
 	}
 	if view := s.view(); !strings.Contains(view, "video stream") {
 		t.Errorf("the task list does not explain why convert_video is unavailable:\n%s", view)
+	}
+
+	// The cursor starts on the first task that can run, so the refusal has to be
+	// reached by moving onto the one that cannot.
+	blocked := -1
+	for i, e := range s.model.taskEntries() {
+		if !e.applies {
+			blocked = i
+			break
+		}
+	}
+	if blocked < 0 {
+		t.Fatalf("no task in the list is blocked, so nothing can be refused")
+	}
+	for s.model.taskIndex != blocked {
+		s.press("down")
 	}
 
 	s.press("enter")
@@ -735,6 +750,40 @@ func TestWizardRefusesATaskTheInputCannotSupport(t *testing.T) {
 	}
 	if s.model.notice == "" {
 		t.Error("selecting an impossible task produced no explanation")
+	}
+}
+
+// TestTaskListStartsOnSomethingThatCanRun: the cursor is the most prominent
+// position on the screen, so it must not open on a greyed-out row that enter
+// then refuses to start - which is what an audio-only file would otherwise do,
+// because the catalogue is alphabetical and burn_subtitles comes first.
+func TestTaskListStartsOnSomethingThatCanRun(t *testing.T) {
+	audioOnly := &ffmpeg.MediaInfo{
+		Path:    "song.mp3",
+		Format:  ffmpeg.FormatInfo{Duration: 3 * time.Second},
+		Streams: []ffmpeg.StreamInfo{{Index: 0, Type: ffmpeg.StreamAudio, CodecName: "mp3"}},
+	}
+	caps := machineCaps()
+	s := newSession(t, Deps{Set: builtinSet(t), Caps: &caps})
+	s.send(probeMsg{path: "song.mp3", info: audioOnly})
+	s.press("enter") // summary -> task list
+
+	entries := s.model.taskEntries()
+	if len(entries) == 0 {
+		t.Fatal("the task list is empty")
+	}
+	if !entries[s.model.taskIndex].applies {
+		t.Fatalf("the cursor starts on %q, which cannot run", entries[s.model.taskIndex].task.ID)
+	}
+	if s.model.taskIndex != 0 {
+		// Not a rule in itself, but it proves the cursor moved rather than the
+		// first task happening to apply.
+		t.Logf("cursor starts at %d, skipping %d tasks that do not apply", s.model.taskIndex, s.model.taskIndex)
+	}
+
+	s.press("enter")
+	if s.model.screen != ScreenStep {
+		t.Fatalf("screen = %v, want the first question of the task under the cursor", s.model.screen)
 	}
 }
 
