@@ -102,8 +102,9 @@ type Deps struct {
 	// Reveal shows a file in the desktop's file manager, best effort. Nil means
 	// the platform default.
 	Reveal func(path string) error
-	// IsDark selects the colour scheme until the terminal says otherwise.
-	IsDark bool
+	// Theme pins the colour scheme. The zero value follows the terminal's own
+	// answer about its background (DECISIONS D46).
+	Theme Theme
 	// ProbeTimeout bounds the ffprobe run. Zero uses the package default.
 	ProbeTimeout time.Duration
 }
@@ -113,6 +114,9 @@ type Model struct {
 	styles Styles
 	keys   bindings
 	help   help.Model
+	// theme is the - possibly pinned - colour scheme, kept so that a terminal
+	// reporting its background cannot override an explicit --theme.
+	theme Theme
 
 	set     *tasks.Set
 	caps    *ffmpeg.Capabilities
@@ -259,9 +263,10 @@ func New(deps Deps) Model {
 	}
 
 	m := Model{
-		styles:  NewStyles(deps.IsDark),
+		styles:  NewStyles(deps.Theme.IsDark()),
 		keys:    newBindings(),
 		help:    help.New(),
+		theme:   deps.Theme,
 		set:     deps.Set,
 		caps:    deps.Caps,
 		tools:   deps.Tools,
@@ -277,7 +282,7 @@ func New(deps Deps) Model {
 		screen:  ScreenInput,
 		input:   deps.Input,
 	}
-	m.help.Styles = help.DefaultStyles(deps.IsDark)
+	m.help.Styles = help.DefaultStyles(deps.Theme.IsDark())
 	if m.runner == nil {
 		m.runner = startFFmpeg
 	}
@@ -428,6 +433,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.BackgroundColorMsg:
+		// An explicit --theme wins: the user is overriding what the terminal
+		// says about itself, which is the reason the flag exists (DECISIONS D46).
+		if m.theme.Pinned() {
+			return m, nil
+		}
 		m.styles = NewStyles(msg.IsDark())
 		m.help.Styles = help.DefaultStyles(msg.IsDark())
 		m.applyStyles()

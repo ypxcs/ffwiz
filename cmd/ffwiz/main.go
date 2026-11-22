@@ -37,6 +37,7 @@ func run() error {
 		configDir   = flag.String("config-dir", "", "directory holding user task overrides (default: ~/.config/ffwiz)")
 		showVersion = flag.Bool("version", false, "print the ffmpeg version ffwiz will use, then exit")
 		debug       = flag.Bool("debug", false, "write a debug log to the user cache directory")
+		themeFlag   = flag.String("theme", "auto", "colour scheme: auto (follow the terminal), light or dark")
 
 		dumpTask  = flag.String("dump", "", "print the ffmpeg command a task produces, without starting the UI")
 		listTasks = flag.Bool("list", false, "list the available tasks, then exit")
@@ -77,6 +78,15 @@ func run() error {
 		}
 	}
 	logf("ffwiz starting: args=%q", os.Args)
+
+	// --theme is rejected before the terminal is taken over, so a typo is a
+	// message rather than a session in the wrong colours (DECISIONS D46).
+	theme, err := wizard.ParseTheme(*themeFlag)
+	if err != nil {
+		logf("rejecting --theme: %v", err)
+		return err
+	}
+	logf("theme: %s", theme)
 
 	// A signal has to clean up the temporary files even though nothing can run a
 	// deferred call: the process is going away (plan.md §8, DECISIONS D10). In
@@ -207,6 +217,7 @@ func run() error {
 		StartDir:     startDir,
 		Clipboard:    wizard.NewSystemClipboard(),
 		TempDir:      tmp.Dir(),
+		Theme:        theme,
 		ProbeTimeout: 30 * time.Second,
 	})
 	program := tea.NewProgram(model)
