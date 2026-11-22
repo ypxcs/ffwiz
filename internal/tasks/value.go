@@ -36,7 +36,7 @@ func (s Step) ValidateValue(value string) error {
 		if err != nil {
 			// Unreachable for a loaded task, but a clear error beats a panic if
 			// a Step is built in Go rather than parsed from YAML.
-			return fmt.Errorf("this step's validation rule is broken: %v", err)
+			return fmt.Errorf("this step's validation rule is broken: %w", err)
 		}
 		if !re.MatchString(value) {
 			return fmt.Errorf("%q does not look right: it must match %s", value, v.Regex)

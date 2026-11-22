@@ -23,6 +23,11 @@ import (
 	"github.com/ypxcs/ffwiz/internal/wizard"
 )
 
+// version is the release this binary came from. GoReleaser sets it at build time
+// (see .goreleaser.yaml); anything built from a checkout - `make build`, go
+// install - says "dev", which is the honest answer for a tree that may be dirty.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "ffwiz: %v\n", err)
@@ -35,7 +40,7 @@ func run() error {
 		ffmpegFlag  = flag.String("ffmpeg", "", "path to the ffmpeg binary (default: $FFWIZ_FFMPEG, then PATH)")
 		ffprobeFlag = flag.String("ffprobe", "", "path to the ffprobe binary (default: $FFWIZ_FFPROBE, then PATH)")
 		configDir   = flag.String("config-dir", "", "directory holding user task overrides (default: ~/.config/ffwiz)")
-		showVersion = flag.Bool("version", false, "print the ffmpeg version ffwiz will use, then exit")
+		showVersion = flag.Bool("version", false, "print the ffwiz and ffmpeg versions, then exit")
 		debug       = flag.Bool("debug", false, "write a debug log to the user cache directory")
 		themeFlag   = flag.String("theme", "auto", "colour scheme: auto (follow the terminal), light or dark")
 
@@ -67,7 +72,7 @@ func run() error {
 	// startup did (DECISIONS D11).
 	logger, closeLog, logErr := openDebugLog(*debug)
 	if closeLog != nil {
-		defer closeLog.Close()
+		defer func() { _ = closeLog.Close() }()
 	}
 	if *debug && logErr != nil {
 		fmt.Fprintf(os.Stderr, "ffwiz: cannot write the debug log: %v\n", logErr)
@@ -108,11 +113,11 @@ func run() error {
 	logf("ffmpeg %q at %s; ffprobe at %s", tools.Version, tools.FFmpeg, tools.FFprobe)
 
 	if *showVersion {
-		version := tools.Version
-		if version == "" {
-			version = "(unknown)"
+		ffmpegVersion := tools.Version
+		if ffmpegVersion == "" {
+			ffmpegVersion = "(unknown)"
 		}
-		fmt.Printf("ffmpeg %s\n  %s\n  %s\n", version, tools.FFmpeg, tools.FFprobe)
+		fmt.Printf("ffwiz %s\nffmpeg %s\n  %s\n  %s\n", version, ffmpegVersion, tools.FFmpeg, tools.FFprobe)
 		return nil
 	}
 
@@ -135,8 +140,7 @@ func run() error {
 			logf("capability detection failed (%v); listing every task as runnable", err)
 			caps = ffmpeg.Capabilities{}
 		}
-		runList(os.Stdout, set, nil, &caps)
-		return nil
+		return runList(os.Stdout, set, nil, &caps)
 	case *dumpTask != "":
 		answers, err := parseAnswers(answerFlags)
 		if err != nil {

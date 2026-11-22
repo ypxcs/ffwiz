@@ -240,24 +240,6 @@ func (s *session) startTask(id string) {
 	}
 }
 
-// startTaskWithPreset starts the named task and picks the preset in the given row
-// of its preset list.
-func (s *session) startTaskWithPreset(id string, row int) {
-	s.t.Helper()
-	if s.model.screen == ScreenInput {
-		s.press("enter")
-	}
-	s.selectTask(id)
-	s.press("enter")
-	if s.model.screen != ScreenPreset {
-		s.t.Fatalf("startTaskWithPreset(%q): screen = %v, want the preset list", id, s.model.screen)
-	}
-	for i := 0; i < row; i++ {
-		s.press("down")
-	}
-	s.press("enter")
-}
-
 // acceptDefaults presses enter until the wizard leaves the questions, which is
 // "take every recommended answer".
 //
@@ -532,7 +514,7 @@ func TestWizardAcceptsDataFromTheCommandLine(t *testing.T) {
 
 // atOutput runs the happy path up to the output screen and makes the default
 // name exist, which is the state every overwrite test starts from.
-func atOutput(t *testing.T) (*session, string) {
+func atOutput(t *testing.T) *session {
 	t.Helper()
 	dir := t.TempDir()
 	input := filepath.Join(dir, "clip.mp4")
@@ -546,13 +528,13 @@ func atOutput(t *testing.T) (*session, string) {
 
 	existing := filepath.Join(dir, "clip_convert_video.mp4")
 	mustWriteFile(t, existing)
-	return s, existing
+	return s
 }
 
 // TestWizardAsksBeforeOverwriting: accepting a name that exists must ask, and
 // the answer must be what puts -y in the command (plan.md §6.5, §8).
 func TestWizardAsksBeforeOverwriting(t *testing.T) {
-	s, _ := atOutput(t)
+	s := atOutput(t)
 
 	s.press("enter")
 	if s.model.screen != ScreenOutput {
@@ -599,7 +581,7 @@ func TestWizardAsksBeforeOverwriting(t *testing.T) {
 // TestWizardChoosingAnotherNameLeavesOverwriteOff: the safe answer returns to
 // the name, and the command stays -n.
 func TestWizardChoosingAnotherNameLeavesOverwriteOff(t *testing.T) {
-	s, _ := atOutput(t)
+	s := atOutput(t)
 
 	s.press("enter") // open the question
 	s.press("enter") // Choose another name
@@ -623,7 +605,7 @@ func TestWizardChoosingAnotherNameLeavesOverwriteOff(t *testing.T) {
 // TestWizardCancellingTheOverwriteQuestion goes back to the last question
 // without touching the file.
 func TestWizardCancellingTheOverwriteQuestion(t *testing.T) {
-	s, _ := atOutput(t)
+	s := atOutput(t)
 
 	s.press("enter")        // open the question
 	s.press("down", "down") // Cancel
@@ -640,7 +622,7 @@ func TestWizardCancellingTheOverwriteQuestion(t *testing.T) {
 // to the name field. That means the destructive answer can only ever be reached
 // by pressing enter on it deliberately (DECISIONS D28).
 func TestWizardEscDoesNotOverwrite(t *testing.T) {
-	s, _ := atOutput(t)
+	s := atOutput(t)
 
 	s.press("enter") // open the question
 	s.press("down")  // move onto Overwrite it
@@ -1136,7 +1118,7 @@ func TestViewIsTotal(t *testing.T) {
 		},
 		{
 			name: "review",
-			want: []string{"Ready to go", "Output format", "press r to run it"},
+			want: []string{"Ready to go", "Output format", "r runs it"},
 			run:  func(s *session) { s.startTask("convert_video"); s.acceptDefaults(); s.press("enter") },
 		},
 		{

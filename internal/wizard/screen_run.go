@@ -216,7 +216,7 @@ func (m *Model) appendLog(line string) {
 // handleTick advances the elapsed clock. Progress arrives only when ffmpeg has
 // something new to say, so without this the display would freeze during a long
 // frame and look like a hang (plan.md §7).
-func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleTick(_ tickMsg) (tea.Model, tea.Cmd) {
 	if m.screen != ScreenRun {
 		return m, nil
 	}

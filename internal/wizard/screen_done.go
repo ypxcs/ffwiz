@@ -181,7 +181,7 @@ func (m Model) hintDone() string {
 }
 
 // updateDone handles the done screen's actions.
-func (m Model) updateDone(msg tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.Model, tea.Cmd) {
+func (m Model) updateDone(_ tea.Msg, keyMsg tea.KeyPressMsg, isKey bool) (tea.Model, tea.Cmd) {
 	if !isKey {
 		return m, nil
 	}

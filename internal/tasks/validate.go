@@ -135,7 +135,11 @@ func (t *Task) validatePresets() []error {
 				// A typed height is a legal answer for a step that offers a
 				// custom field, so it is checked the same way the wizard checks
 				// it (see selectResolution).
-				if !findChoiceOK(step.Choices, value) && !(step.Custom && step.ValidateValue(value) == nil) {
+				legal := findChoiceOK(step.Choices, value)
+				if !legal && step.Custom {
+					legal = step.ValidateValue(value) == nil
+				}
+				if !legal {
 					errs = append(errs, at(p.ID, "%s=%q is neither a preset of that step nor a value it accepts", stepID, value))
 				}
 			case StepTimeRange:

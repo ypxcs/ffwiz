@@ -22,14 +22,13 @@ func (s *session) typeText(text string) {
 
 // editing opens the editor from the review screen and replaces the text,
 // returning the session and the text that was put there.
-func editing(t *testing.T, s *session, text string) string {
+func editing(t *testing.T, s *session, text string) {
 	t.Helper()
 	s.press("x")
 	if s.model.screen != ScreenEdit {
 		t.Fatalf("screen = %v, want the edit screen", s.model.screen)
 	}
 	s.model.editArea.SetValue(text)
-	return text
 }
 
 func TestWizardEditsTheCommand(t *testing.T) {

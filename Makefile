@@ -2,7 +2,7 @@ GO ?= go
 BIN := bin/ffwiz
 PKG := ./...
 
-.PHONY: all build test test-integration lint fmt vet run dump samples clean
+.PHONY: all build test test-integration lint fmt vet run dump samples release-check clean
 
 all: lint test build
 
@@ -18,7 +18,14 @@ test:
 test-integration:
 	$(GO) test -v -count=1 -run Integration $(PKG)
 
+## lint: gofmt and vet always; golangci-lint too when it is installed, since it
+## carries the project's configuration (.golangci.yml) and CI runs it.
 lint: fmt vet
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run $(PKG); \
+	else \
+		echo "golangci-lint not installed; skipping it (CI runs it)"; \
+	fi
 
 fmt:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
@@ -40,5 +47,11 @@ dump:
 samples:
 	./scripts/make-samples.sh
 
+## release-check: build every release target without publishing anything
+## (plan.md §9). `goreleaser check` is left to CI: it resolves the git remote to
+## validate the release section, and a local clone may have no remote yet.
+release-check:
+	goreleaser release --snapshot --clean
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

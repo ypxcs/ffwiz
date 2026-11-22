@@ -246,7 +246,9 @@ func TestRunDumpProbeFailureIsReported(t *testing.T) {
 
 func TestRunList(t *testing.T) {
 	var buf bytes.Buffer
-	runList(&buf, demoSet(t), nil, nil)
+	if err := runList(&buf, demoSet(t), nil, nil); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
 	got := buf.String()
 	if !strings.Contains(got, "demo") || !strings.Contains(got, "Demo task") {
 		t.Errorf("runList output = %q", got)
@@ -264,7 +266,9 @@ func TestRunListMarksTasksThatDoNotApply(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	runList(&buf, demoSet(t), audioOnly, nil)
+	if err := runList(&buf, demoSet(t), audioOnly, nil); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
 	if !strings.Contains(buf.String(), "video stream") {
 		t.Errorf("runList did not explain why the task does not apply: %q", buf.String())
 	}

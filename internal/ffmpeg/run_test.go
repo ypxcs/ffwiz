@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"context"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -579,7 +580,7 @@ func TestStartRejectsBadInput(t *testing.T) {
 	if _, err := Start(context.Background(), "", cmd, RunOptions{}); err == nil {
 		t.Error("Start with no ffmpeg path succeeded")
 	}
-	if _, err := Start(context.Background(), "/bin/echo", nil, RunOptions{}); err != ErrNoCommand {
+	if _, err := Start(context.Background(), "/bin/echo", nil, RunOptions{}); !errors.Is(err, ErrNoCommand) {
 		t.Errorf("Start with no command = %v, want ErrNoCommand", err)
 	}
 	if _, err := Start(context.Background(), filepath.Join(t.TempDir(), "nope"), cmd, RunOptions{}); err == nil {

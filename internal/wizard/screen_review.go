@@ -74,9 +74,6 @@ func (m Model) reviewBody(width int) string {
 			"the existing file will be replaced if you run this") + "\n")
 	case m.copied:
 		b.WriteString("\n" + m.styles.OK.Render("copied to the clipboard") + "\n")
-	default:
-		b.WriteString("\n" + m.styles.Muted.Render(
-			"press r to run it, c to copy it, x to edit it or s to save it as a script") + "\n")
 	}
 
 	if cmd == nil {
@@ -132,9 +129,14 @@ func stripANSI(s string) string {
 }
 
 // hintReview says what the actions do, and what is still missing.
+//
+// It is the only place the actions are spelled out on this screen: the footer is
+// the terse reminder and the body above is what is about to run. The sentences
+// are kept inside 80 columns so the hint is not truncated on the narrowest
+// terminal the wizard supports (plan.md §6, D26).
 func (m Model) hintReview() string {
 	if m.edited != nil {
-		return "this command is yours now; x to edit it again, u to go back to the one ffwiz built"
+		return "yours now; x edits it again, u goes back to the built command"
 	}
 	_, pending, err := m.liveCommand()
 	if err != nil {
@@ -143,7 +145,7 @@ func (m Model) hintReview() string {
 	if len(pending) > 0 {
 		return "some answers are missing; go back and fill them in"
 	}
-	return "press r to run it, c to copy it, x to edit it, s to save it as a script, or esc to change an answer"
+	return "r runs it, c copies it, x edits it, s saves a script; esc changes an answer"
 }
 
 // updateReview handles the review screen's actions (plan.md §6.6).

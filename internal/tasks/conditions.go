@@ -195,7 +195,7 @@ func platformName(goos string) string {
 }
 
 // validate checks a condition tree for unknown references, so a typo like
-// `answer_is: {vcodec: cpoy}` or `input_has: vidio` is a load-time error rather
+// `answer_is: {vcodec: h246}` or `input_has: vidio` is a load-time error rather
 // than a silently always-false gate.
 //
 // stepIDs maps step id to position; a condition may only read answers from

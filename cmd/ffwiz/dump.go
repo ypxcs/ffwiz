@@ -108,7 +108,9 @@ func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags)
 	engine := &tasks.Engine{Task: task, Info: info, Caps: caps, TempDir: flags.TempDir}
 
 	if applies, reason := task.AppliesTo(info, caps); !applies {
-		fmt.Fprintf(out, "warning: this task %s\n\n", reason)
+		if _, err := fmt.Fprintf(out, "warning: this task %s\n\n", reason); err != nil {
+			return err
+		}
 	}
 
 	cmd, res, err := engine.Build(flags.Answers, tasks.BuildOptions{
@@ -128,18 +130,40 @@ func runDump(out io.Writer, tools ffmpeg.Tools, set *tasks.Set, flags dumpFlags)
 	}
 
 	if flags.JSON {
-		return writeDumpJSON(out, task, info, res, cmd)
+		return writeDumpJSON(out, task, res, cmd)
 	}
-	writeDumpText(out, task, info, flags, engine, res, cmd)
-	return nil
+	return writeDumpText(out, task, info, flags, engine, res, cmd)
 }
 
-func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags dumpFlags, engine *tasks.Engine, res tasks.Resolution, cmd *ffmpeg.Command) {
-	fmt.Fprintf(out, "task     %s — %s\n", task.ID, task.Label)
-	fmt.Fprintf(out, "input    %s%s\n", flags.Input, describeInput(info))
-	fmt.Fprintf(out, "output   %s\n", cmdOutput(cmd))
+// printer writes formatted lines to a stream and remembers the first failure.
+//
+// The dump and the task listing are straight runs of Fprintf calls, and threading
+// an `if err != nil` through every one of them would bury the report in error
+// handling for a stdout that is nearly always fine. Remembering the first error
+// keeps the code readable and still lets the command exit non-zero when its
+// output did not reach the terminal - a closed pipe is the usual case, and it is
+// how `ffwiz --dump | head` stops quietly instead of reporting success it never
+// achieved.
+type printer struct {
+	w   io.Writer
+	err error
+}
 
-	fmt.Fprintf(out, "\nsteps\n")
+func (p *printer) printf(format string, args ...any) {
+	if p.err != nil {
+		return
+	}
+	_, p.err = fmt.Fprintf(p.w, format, args...)
+}
+
+// writeDumpText prints the command and the reasoning behind it.
+func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags dumpFlags, engine *tasks.Engine, res tasks.Resolution, cmd *ffmpeg.Command) error {
+	p := &printer{w: out}
+	p.printf("task     %s — %s\n", task.ID, task.Label)
+	p.printf("input    %s%s\n", flags.Input, describeInput(info))
+	p.printf("output   %s\n", cmdOutput(cmd))
+
+	p.printf("\nsteps\n")
 	for _, step := range res.Active {
 		answer := res.Answers[step.ID]
 		_, given := flags.Answers[step.ID]
@@ -152,7 +176,7 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 		case given:
 			source = "answered"
 		}
-		fmt.Fprintf(out, "  %-14s %-8s %s=%q\n", step.ID, source, step.Type, answer)
+		p.printf("  %-14s %-8s %s=%q\n", step.ID, source, step.Type, answer)
 	}
 
 	if len(res.Skipped) > 0 {
@@ -161,9 +185,9 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		fmt.Fprintf(out, "\nskipped\n")
+		p.printf("\nskipped\n")
 		for _, id := range ids {
-			fmt.Fprintf(out, "  %-14s %s\n", id, res.Skipped[id])
+			p.printf("  %-14s %s\n", id, res.Skipped[id])
 		}
 	}
 
@@ -173,14 +197,14 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		fmt.Fprintf(out, "\nhidden options\n")
+		p.printf("\nhidden options\n")
 		for _, id := range ids {
 			for _, c := range res.HiddenChoices[id] {
 				reason := engine.Unavailable(c)
 				if reason == "" {
 					reason = "does not apply to the answers so far"
 				}
-				fmt.Fprintf(out, "  %-14s %-22s %s\n", id, c.Value, reason)
+				p.printf("  %-14s %-22s %s\n", id, c.Value, reason)
 			}
 		}
 	}
@@ -189,21 +213,22 @@ func writeDumpText(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, flags
 	// dump must say so rather than print a command that quietly left the answer
 	// out. The wizard itself will not run such a command (DECISIONS D29).
 	if pending := pendingSteps(res); len(pending) > 0 {
-		fmt.Fprintf(out, "\nwarning: unanswered: %s — the command below leaves %s out\n",
+		p.printf("\nwarning: unanswered: %s — the command below leaves %s out\n",
 			strings.Join(pending, ", "), plural(len(pending), "it", "them"))
 	}
 
-	fmt.Fprintf(out, "\ncommand\n%s\n", cmd.String())
+	p.printf("\ncommand\n%s\n", cmd.String())
 
 	// A file ffwiz writes for the command is invisible in the command itself,
 	// which just names it; saying where it came from is the difference between
 	// a pasteable command and a mystery path.
 	if arts := cmd.Artifacts(); len(arts) > 0 {
-		fmt.Fprintf(out, "\nfiles written for this command\n")
+		p.printf("\nfiles written for this command\n")
 		for _, a := range arts {
-			fmt.Fprintf(out, "  %s\n", a.Path)
+			p.printf("  %s\n", a.Path)
 		}
 	}
+	return p.err
 }
 
 // pendingSteps lists the active steps with no answer, in step order.
@@ -237,7 +262,7 @@ type dumpJSON struct {
 	Expected string            `json:"expected_duration"`
 }
 
-func writeDumpJSON(out io.Writer, task tasks.Task, info *ffmpeg.MediaInfo, res tasks.Resolution, cmd *ffmpeg.Command) error {
+func writeDumpJSON(out io.Writer, task tasks.Task, res tasks.Resolution, cmd *ffmpeg.Command) error {
 	payload := dumpJSON{
 		TaskID:   task.ID,
 		Answers:  res.Answers,
@@ -278,14 +303,16 @@ func describeInput(info *ffmpeg.MediaInfo) string {
 
 // runList prints the task catalogue, with each task marked when it does not
 // apply to the probed input or to this ffmpeg build.
-func runList(out io.Writer, set *tasks.Set, info *ffmpeg.MediaInfo, caps *ffmpeg.Capabilities) {
+func runList(out io.Writer, set *tasks.Set, info *ffmpeg.MediaInfo, caps *ffmpeg.Capabilities) error {
+	p := &printer{w: out}
 	for _, task := range set.Tasks {
 		marker := ""
 		if applies, reason := task.AppliesTo(info, caps); !applies {
 			marker = "  [" + reason + "]"
 		}
-		fmt.Fprintf(out, "%-18s %s%s\n", task.ID, task.Label, marker)
+		p.printf("%-18s %s%s\n", task.ID, task.Label, marker)
 	}
+	return p.err
 }
 
 func cmdOutput(cmd *ffmpeg.Command) string {

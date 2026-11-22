@@ -1,0 +1,41 @@
+# Release (plan.md §9). Pushing a version tag builds the whole matrix and
+# publishes it.
+#
+# The binaries are built without cgo, so the Linux and macOS ones are static: the
+# only runtime dependency is ffmpeg and ffprobe on the user's PATH, which is what
+# plan.md §11 asks for.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # GoReleaser reads the tags and the commit history for the changelog.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # A release that does not pass the tests is not a release. The unit and
+      # model tests need no ffmpeg; the integration tests skip themselves on this
+      # runner.
+      - name: Test
+        run: go test ./... -count=1 -timeout 10m
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -179,7 +179,7 @@ func TestIntegrationRunAwkwardFilenames(t *testing.T) {
 			// Put the output next to the input so the awkward directory name is
 			// exercised too, then clean up.
 			output := filepath.Join(filepath.Dir(input), "awkward_out.mp4")
-			t.Cleanup(func() { os.Remove(output) })
+			t.Cleanup(func() { _ = os.Remove(output) })
 
 			eng := &Engine{Task: task, Info: info, Caps: &caps}
 			cmd, _, err := eng.Build(nil, tasksBuildOptions(input, output))

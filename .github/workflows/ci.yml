@@ -1,0 +1,96 @@
+# Continuous integration (plan.md §9: "CI (GitHub Actions) running tests on
+# Linux and macOS").
+#
+# The tests must pass with no ffmpeg at all - the integration tests skip
+# themselves when ffprobe or the sample media is missing - so the ffmpeg install
+# and the sample generation are allowed to fail. What must never be allowed to
+# fail is `go test ./...`, because a skipped integration test is visible in the
+# log and a broken unit test is not.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Ubuntu images carry ffmpeg; macOS ones do not. Installing it is what lets
+      # the integration tests run rather than skip, so a failure here is a
+      # downgrade, not an error.
+      - name: Provide ffmpeg
+        continue-on-error: true
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -version | head -n 1
+            exit 0
+          fi
+          echo "::notice::no ffmpeg on this runner; installing it"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ffmpeg
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+
+      # The sample media is gitignored and generated, so the integration tests
+      # need this step to have something to run against.
+      - name: Generate sample media
+        continue-on-error: true
+        run: make samples
+
+      - name: Test
+        run: go test ./... -count=1 -timeout 10m
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The action installs the binary the config is written for; the version is
+      # pinned because a new minor of golangci-lint can add a linter and turn a
+      # green build red without a line changing.
+      - uses: golangci-lint/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+      # `goreleaser check` is the only way to know the release configuration is
+      # still valid - a typo in it costs a release, not a build.
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check

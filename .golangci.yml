@@ -1,0 +1,59 @@
+# golangci-lint configuration (v2 format).
+#
+# `standard` is errcheck, govet, ineffassign, staticcheck and unused - the set
+# that catches real mistakes rather than style preferences. The extras below are
+# the ones this codebase can actually keep clean, each for a reason:
+#
+#   bodyclose    - the ffprobe/ffmpeg helpers make HTTP-free requests, but the
+#                  rule costs nothing and a leaked body is invisible until it is
+#                  not;
+#   errorlint    - %w and errors.Is are the difference between a wrapped cause a
+#                  caller can test and a message it can only print;
+#   misspell     - the user reads these strings;
+#   unconvert    - a redundant conversion around a typed value is a bug that
+#                  compiles;
+#   unparam      - a parameter that is always the same value is an argument that
+#                  should not exist;
+#   usestdlibvars - "200" and "GET" spelled out are how a typo hides;
+#   wastedassign - an assignment nothing reads is a step that was dropped;
+#   whitespace   - a stray blank line at the top of a block reads as a missing
+#                  statement.
+#
+# Deliberately not enabled: revive and gocritic in their default configura-
+# tions, which are long lists of taste (exported comments, single-case switches,
+# unnamed results). The project already follows those conventions; a linter
+# repeating them adds noise to every run without adding a finding that matters.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+  exclusions:
+    generated: lax
+    rules:
+      # A test decides what is worth checking; an ignored error in a cleanup
+      # func is almost always deliberate.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  # Show every instance rather than the first three of each kind: a run that
+  # hides findings makes "0 issues" mean less than it says.
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
+formatters:
+  enable:
+    - gofmt

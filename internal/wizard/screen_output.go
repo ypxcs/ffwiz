@@ -348,14 +348,14 @@ func checkOutputDir(path string) error {
 	case errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("the output folder does not exist: %s", short)
 	case err != nil:
-		return fmt.Errorf("that output folder cannot be used (%v): %s", err, short)
+		return fmt.Errorf("that output folder cannot be used (%w): %s", err, short)
 	case !info.IsDir():
 		return fmt.Errorf("%s is a file, not a folder", short)
 	}
 
 	probe, err := os.CreateTemp(dir, ".ffwiz-write-check-*")
 	if err != nil {
-		return fmt.Errorf("the output folder cannot be written to (%v): %s", err, short)
+		return fmt.Errorf("the output folder cannot be written to (%w): %s", err, short)
 	}
 	name := probe.Name()
 	_ = probe.Close()

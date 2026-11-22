@@ -1,0 +1,74 @@
+# GoReleaser configuration (plan.md §9, "Release with GoReleaser for
+# linux/macOS/windows, amd64/arm64").
+#
+# Check it with `goreleaser check`, and build the whole matrix without publishing
+# with `goreleaser release --snapshot --clean` (the Makefile's `release-check`).
+# `check` resolves the git remote to validate the release section, so it is run
+# by CI rather than being part of the local make target.
+version: 2
+
+project_name: ffwiz
+
+before:
+  hooks:
+    # A build must not be able to change go.mod or go.sum, so this verifies them
+    # instead of tidying them.
+    - go mod verify
+
+builds:
+  - id: ffwiz
+    main: ./cmd/ffwiz
+    binary: ffwiz
+    # No cgo anywhere in the tree, and CGO_ENABLED=0 is what actually makes the
+    # Linux and macOS binaries static, which plan.md §11 asks for.
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      # So a released binary can say which release it is (DECISIONS D47).
+      - -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Reproducible archives: the timestamps come from the commit, not the clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: ffwiz
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # The README documents the flags and the YAML schema, and the schema is what
+    # makes a downloaded binary usable for a task the wizard does not ship.
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  # A release is a public act, so it stays a draft until a person publishes it.
+  draft: true
+  prerelease: auto
