@@ -49,10 +49,12 @@ archives:
           - zip
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    # The README documents the flags and the YAML schema, and the schema is what
-    # makes a downloaded binary usable for a task the wizard does not ship.
+    # The README documents install and use; docs/README.md carries the YAML
+    # schema, and the schema is what makes a downloaded binary usable for a task
+    # the wizard does not ship. Both travel with the archive.
     files:
       - README.md
+      - docs/README.md
 
 checksum:
   name_template: checksums.txt

@@ -6,8 +6,9 @@
 coverage.out
 
 # Local-only documentation.
-# README.md is the only markdown file that is tracked; everything else
-# (plan.md, DECISIONS.md, docs/TASKS.md, ...) stays local.
+# README.md is the only kind of markdown file that is tracked: the root
+# README.md and a README.md inside any directory (docs/README.md). Everything
+# else (plan.md, DECISIONS.md, AGENTS.md, ...) stays local.
 *.md
 !README.md
 !**/README.md
