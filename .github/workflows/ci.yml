@@ -1,6 +1,10 @@
 # Continuous integration (plan.md §9: "CI (GitHub Actions) running tests on
 # Linux and macOS").
 #
+# It runs on demand - `gh workflow run CI`, or the Run workflow button on the
+# Actions tab - and not on push or pull request. The repository owner asked for
+# that: nothing should run on the GitHub account by itself.
+#
 # The tests must pass with no ffmpeg at all - the integration tests skip
 # themselves when ffprobe or the sample media is missing - so the ffmpeg install
 # and the sample generation are allowed to fail. What must never be allowed to
@@ -9,9 +13,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -84,7 +85,7 @@ jobs:
       # The action installs the binary the config is written for; the version is
       # pinned because a new minor of golangci-lint can add a linter and turn a
       # green build red without a line changing.
-      - uses: golangci-lint/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
 

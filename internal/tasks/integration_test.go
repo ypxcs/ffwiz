@@ -272,7 +272,12 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 		name    string
 		task    string
 		answers map[string]string
-		input   string
+		// sampleAnswers is merged into answers inside the subtest, with each
+		// value resolved to the absolute path of a generated sample file. A
+		// real user hands the wizard an absolute path, and a relative one here
+		// would silently depend on the test's working directory.
+		sampleAnswers map[string]string
+		input         string
 		// out is appended to "out", so "mp3" writes out.mp3 and
 		// "%04d.png" writes out.%04d.png.
 		out string
@@ -487,12 +492,12 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			// subs.srt with plain content; the awkward-name coverage for filter
 			// arguments lives in internal/ffmpeg, which asks ffmpeg about every
 			// character at once through the movie filter.
-			name:       "burn subtitles: re-encoded with the text drawn on",
-			task:       "burn_subtitles",
-			answers:    map[string]string{"subs": "../../ffmpeg/testdata/generated/subs.srt"},
-			input:      "av.mp4",
-			out:        "mp4",
-			needFilter: "subtitles",
+			name:          "burn subtitles: re-encoded with the text drawn on",
+			task:          "burn_subtitles",
+			sampleAnswers: map[string]string{"subs": "subs.srt"},
+			input:         "av.mp4",
+			out:           "mp4",
+			needFilter:    "subtitles",
 			check: func(t *testing.T, got *ffmpeg.MediaInfo) {
 				wantStream(t, got, ffmpeg.StreamVideo, "h264")
 				wantStream(t, got, ffmpeg.StreamAudio, "aac")
@@ -516,8 +521,18 @@ func TestIntegrationRunCatalogueTasks(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s is not in the catalogue", tc.task)
 			}
+			answers := tc.answers
+			if len(tc.sampleAnswers) > 0 {
+				answers = make(map[string]string, len(tc.answers)+len(tc.sampleAnswers))
+				for step, value := range tc.answers {
+					answers[step] = value
+				}
+				for step, file := range tc.sampleAnswers {
+					answers[step] = requireSample(t, file)
+				}
+			}
 			eng := &Engine{Task: task, Info: info, Caps: &caps, TempDir: t.TempDir()}
-			cmd, _, err := eng.Build(tc.answers, tasksBuildOptions(input, output))
+			cmd, _, err := eng.Build(answers, tasksBuildOptions(input, output))
 			if err != nil {
 				t.Fatalf("Build: %v", err)
 			}
